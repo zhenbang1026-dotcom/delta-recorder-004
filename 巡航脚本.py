@@ -39,11 +39,16 @@ except ModuleNotFoundError:
 每度像素 = 100 / 3
 # text 模式锁定该值，禁止在线标定漂到 38~45（会导致拧过头）
 TEXT_每度像素 = 100 / 3
-# text：单次阻塞转向最多转这么多度（分段拧，避免读数飞）
-TEXT_单次最大转向角度 = 42.0
-TEXT_转向后稳定等待 = 0.10
-TEXT_转向后采样次数 = 3
-TEXT_转向后采样间隔 = 0.04
+# text：仅极大角差才停车；单次最多约 50°
+TEXT_单次最大转向角度 = 50.0
+# 稳采样减负：默认 1 次；仅读数偏离命令角时再补采
+TEXT_转向后稳定等待 = 0.05
+TEXT_转向后采样次数 = 1
+TEXT_转向后采样间隔 = 0.03
+TEXT_补采次数 = 2
+TEXT_命令偏离阈值 = 35.0
+# 控制角 = (1-w)*命令递推 + w*读数（降低对瞬时 text 的依赖）
+TEXT_读数融合权重 = 0.50
 小地图区域 = (57, 116, 200, 235)
 # 默认旧算法 ROI；text 模式切换为 (34,78,227,271)
 角度区域 = (119, 161, 146, 188)
@@ -211,11 +216,18 @@ def 角度差转鼠标像素(角度差: float) -> int:
 
 def 计算自适应转向角度(角度差: float) -> float:
     if 是否text角度模式():
-        # 分段拧：单次最多 ~42°，留 6% 余量；大折角多步完成，避免读数飞
-        幅度 = min(abs(角度差) * 0.94, TEXT_单次最大转向角度)
+        # 极少停车；一旦停车可一次拧到约 50°
+        幅度 = min(abs(角度差) * 0.95, TEXT_单次最大转向角度)
         return math.copysign(幅度, 角度差)
     幅度 = min(abs(角度差), abs(角度差) * 自适应转向比例, 自适应转向最大角度)
     return math.copysign(幅度, 角度差)
+
+
+def text融合控制角(命令角: float, 读数角: float, 读数权重: float = TEXT_读数融合权重) -> float:
+    """圆形插值：命令递推 ↔ 读数。"""
+    d = 计算最短角度差(命令角, 读数角)
+    w = max(0.0, min(1.0, float(读数权重)))
+    return (命令角 + w * d) % 360.0
 
 
 def 校验到点阈值(到点阈值: int) -> None:
@@ -407,20 +419,27 @@ def 角度诊断日志字段(定位器=None) -> dict[str, str]:
 
 def 普通模式参数() -> 模式参数:
     if 是否text角度模式():
-        # text：更高阻塞门槛，逼近 legacy「多疾跑」手感（日志转向 20%→目标~12%）
-        return 模式参数(大角度阈值=36, 小角度阈值=9, 允许疾跑=True, 精准缩放=1.0)
+        # 逼近 legacy：几乎只在 >48° 停车；其余边跑边修
+        return 模式参数(大角度阈值=48, 小角度阈值=10, 允许疾跑=True, 精准缩放=1.0)
     return 模式参数(大角度阈值=18, 小角度阈值=6, 允许疾跑=True, 精准缩放=1.0)
 
 
 def 精准模式参数() -> 模式参数:
     if 是否text角度模式():
-        return 模式参数(大角度阈值=24, 小角度阈值=6, 允许疾跑=False, 精准缩放=0.5)
+        return 模式参数(大角度阈值=32, 小角度阈值=7, 允许疾跑=False, 精准缩放=0.55)
     return 模式参数(大角度阈值=10, 小角度阈值=3, 允许疾跑=False, 精准缩放=0.35)
 
 
 def text微调鼠标像素(角度差: float, 精准缩放: float = 1.0) -> int:
-    """text 边跑边修：33.3 px/°，单帧最多约 14°。"""
-    限幅 = max(-14.0, min(14.0, 角度差)) * 精准缩放
+    """text 边跑边修：角差越大单帧限幅略增，仍避免拧飞。"""
+    ad = abs(角度差)
+    if ad >= 30:
+        cap = 22.0
+    elif ad >= 18:
+        cap = 18.0
+    else:
+        cap = 14.0
+    限幅 = max(-cap, min(cap, 角度差)) * 精准缩放
     return 角度差转鼠标像素(限幅)
 
 
@@ -479,13 +498,14 @@ def 抽稀自动路线(路径点列表: list[路径点], 最小点距: int = 自
 def 选择动作(*, 距离: int, 角度差: float, 到点阈值: int, 参数: 模式参数, 自动路线: bool = False) -> 动作指令:
     if 距离 <= 到点阈值:
         return 动作指令("自动路线切换下一个点" if 自动路线 else "切换下一个点")
-    # text：仅很大角差才停车转向；中等角差全部边跑边修
+    # text：>48° 才停车；否则全部边跑边修（含 20–47° 大修）
     if 是否text角度模式():
-        if abs(角度差) >= 参数.大角度阈值:
+        if abs(角度差) >= 参数.大角度阈值 and 距离 >= 到点阈值 * 3:
             return 动作指令(
                 "转向",
                 鼠标像素=角度差转鼠标像素(计算自适应转向角度(角度差) * 参数.精准缩放),
             )
+        # 近点也不停车拧，避免 turn_wait 刷次数
         if 参数.允许疾跑 and 距离 >= 到点阈值 * 2:
             if abs(角度差) <= 参数.小角度阈值:
                 return 动作指令("疾跑前进")
@@ -576,8 +596,11 @@ class 实时定位器:
         # text：锁定 33.3 px/°；legacy：恢复默认可在线标定
         if mode == "text":
             重置每度像素校准(TEXT_每度像素)
+            self._text命令角 = None
         else:
             重置每度像素校准(每度像素)
+            if hasattr(self, "_text命令角"):
+                self._text命令角 = None
         return mode
 
     def _加载依赖(self) -> None:
@@ -712,6 +735,37 @@ class 实时定位器:
         if abs(计算最短角度差(上次角度, angle)) > 上限:
             return 上次角度
         return float(angle)
+
+    def _text融合读角(self, 读数角: float) -> float:
+        """步进时用命令递推角与读数 50/50 融合，降低瞬时 text 野值权重。"""
+        if not 是否text角度模式():
+            return float(读数角)
+        命令角 = getattr(self, "_text命令角", None)
+        if 命令角 is None:
+            self._text命令角 = float(读数角) % 360.0
+            return float(self._text命令角)
+        融合 = text融合控制角(float(命令角), float(读数角), TEXT_读数融合权重)
+        # 若读数相对命令飞太远，更信命令
+        if abs(计算最短角度差(float(命令角), float(读数角))) > 50.0:
+            融合 = float(命令角) % 360.0
+        self._text命令角 = 融合
+        try:
+            合并识别模块.角度模块.force_text_stabilizer_angle(融合)
+        except Exception:
+            pass
+        return 融合
+
+    def text登记鼠标转角(self, 鼠标像素: int | None) -> None:
+        """执行鼠标相对移动后，按 33.3 更新命令递推角。"""
+        if not 是否text角度模式() or not 鼠标像素:
+            return
+        基 = getattr(self, "_text命令角", None)
+        if 基 is None and self.最近状态 is not None:
+            基 = float(self.最近状态[2])
+        if 基 is None:
+            return
+        转 = float(鼠标像素) / 当前每度像素()
+        self._text命令角 = (float(基) + 转) % 360.0
 
     def _确认角度跳变(self, x: int, y: int, angle: float, 复查函数) -> float:
         self._角度复查诊断 = ""
@@ -909,6 +963,7 @@ class 实时定位器:
             self._识别角度(角度图像),
             lambda: self._识别角度(self._截图区域(self.角度截图区域)),
         )
+        angle = self._text融合读角(angle)
         self.最近状态 = (x, y, angle)
         设置识别诊断状态(self, self._角度复查诊断 or "识别完成")
         return self.最近状态
@@ -1219,27 +1274,30 @@ class 巡航控制器:
         角度差 = random.choice((-1.0, 1.0)) * random.uniform(角度刷新最小角度, 角度刷新最大角度)
         return 动作指令("刷新视角", 鼠标像素=角度差转鼠标像素(角度差))
 
-    def _text稳采样状态(self, 回退状态: tuple[int, int, float]) -> tuple[int, int, float]:
-        """转向后短等 + 多次读角取圆形中位数，抑制运动中野值。"""
+    def _text轻量读状态(self, 回退状态: tuple[int, int, float]) -> tuple[int, int, float]:
+        """默认 1 次读取；失败则回退。"""
         if TEXT_转向后稳定等待 > 0:
             self._等待并检查停止(TEXT_转向后稳定等待)
-        样本: list[tuple[int, int, float]] = []
-        for i in range(max(1, TEXT_转向后采样次数)):
+        try:
+            return self._读取状态_带重试()
+        except Exception:
+            return 回退状态
+
+    def _text补采状态(self, 初值: tuple[int, int, float]) -> tuple[int, int, float]:
+        """仅当读数可疑时再采 2 次取中位数。"""
+        样本 = [初值]
+        for i in range(TEXT_补采次数):
+            if TEXT_转向后采样间隔 > 0:
+                self._等待并检查停止(TEXT_转向后采样间隔)
             try:
                 样本.append(self._读取状态_带重试())
             except Exception:
                 break
-            if i + 1 < TEXT_转向后采样次数 and TEXT_转向后采样间隔 > 0:
-                self._等待并检查停止(TEXT_转向后采样间隔)
-        if not 样本:
-            return 回退状态
+        if len(样本) == 1:
+            return 初值
         x = int(round(sum(s[0] for s in 样本) / len(样本)))
         y = int(round(sum(s[1] for s in 样本) / len(样本)))
         ang = text中位角度([float(s[2]) for s in 样本])
-        try:
-            合并识别模块.角度模块.force_text_stabilizer_angle(ang)
-        except Exception:
-            pass
         return (x, y, ang)
 
     def _转向后确认状态(
@@ -1262,34 +1320,36 @@ class 巡航控制器:
         是否text = 是否text角度模式()
 
         if 是否text:
-            # 命令角（按 33.3 像素）作先验，再与稳采样融合
             命令转角 = (动作.鼠标像素 or 0) / 当前每度像素()
             预期角 = (起始角度 + 命令转角) % 360.0
-            最新状态 = self._text稳采样状态(当前状态)
+            最新状态 = self._text轻量读状态(当前状态)
             读数角 = float(最新状态[2])
-            # 读数相对命令偏差过大 → 更信命令角（抗 251→127 类飞点）
-            if abs(计算最短角度差(预期角, 读数角)) > 40.0:
+            偏离 = abs(计算最短角度差(预期角, 读数角))
+            if 偏离 > TEXT_命令偏离阈值:
+                最新状态 = self._text补采状态(最新状态)
+                读数角 = float(最新状态[2])
+                偏离 = abs(计算最短角度差(预期角, 读数角))
+            if 偏离 > TEXT_命令偏离阈值:
                 融合角 = 预期角
                 拒绝原因 = f"text读数偏离命令角 {读数角:.1f} vs {预期角:.1f}，采信命令"
-                try:
-                    合并识别模块.角度模块.force_text_stabilizer_angle(融合角)
-                except Exception:
-                    pass
             else:
-                # 70% 读数 + 30% 命令
-                d = 计算最短角度差(预期角, 读数角)
-                融合角 = (预期角 + 0.70 * d) % 360.0
-                try:
-                    合并识别模块.角度模块.force_text_stabilizer_angle(融合角)
-                except Exception:
-                    pass
+                融合角 = text融合控制角(预期角, 读数角, TEXT_读数融合权重)
+            try:
+                合并识别模块.角度模块.force_text_stabilizer_angle(融合角)
+            except Exception:
+                pass
+            # 同步定位器命令递推，供后续步进融合
+            try:
+                setattr(self.定位器, "_text命令角", 融合角)
+            except Exception:
+                pass
             最新状态 = (最新状态[0], 最新状态[1], 融合角)
             最新目标角度 = 计算目标角度(最新状态[0], 最新状态[1], 当前点.x, 当前点.y)
             最新角度差 = 计算最短角度差(最新状态[2], 最新目标角度)
             最新可信状态 = 最新状态
             最新可信角度差 = 最新角度差
             角度变化 = abs(计算最短角度差(起始角度, 最新状态[2]))
-            是否收敛 = abs(最新角度差) <= max(收敛阈值, 12.0) or 角度变化 >= 2.0
+            是否收敛 = abs(最新角度差) <= max(收敛阈值, 15.0) or 角度变化 >= 1.5
         else:
             超时 = 转向后确认超时秒数
             最小变化 = 转向后最小角度变化
@@ -1567,6 +1627,12 @@ class 巡航控制器:
                     elif 动作.类型 == "转向" and self._连续转向次数 >= 3:
                         self.记录器.保存事件截图("连续转向")
                 self.执行器.执行(动作)
+                # text：按 33.3 把鼠标像素累进命令角（边跑边修也更新）
+                if 是否text角度模式() and getattr(动作, "鼠标像素", None):
+                    try:
+                        self.定位器.text登记鼠标转角(动作.鼠标像素)
+                    except Exception:
+                        pass
                 self._转向后确认状态((x, y, 当前角度), 当前点, 角度差, 动作)
                 if 动作.类型 in 转向类动作:
                     self._重置卡住计时()
