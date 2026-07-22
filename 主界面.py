@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import os
 import queue
 import sys
 import threading
@@ -129,10 +130,25 @@ class 合并主界面:
         self.root.after(100, self._esc_poll)
 
     # ------------------------------------------------------------------ init
+    def _map_path_for_cv2(self) -> str:
+        """cv2.imread 不支持中文绝对路径，优先用相对路径 maps/DB.png。"""
+        rel = Path("maps") / "DB.png"
+        if rel.is_file():
+            return str(rel).replace("\\", "/")
+        if MAP_PATH.is_file():
+            return str(MAP_PATH)
+        return 巡航模块.地图文件路径
+
     def _init_backends(self) -> None:
+        # 确保工作目录在项目根，相对 maps/ 可用
+        try:
+            os.chdir(str(ROOT))
+        except Exception:
+            pass
+
         try:
             识别模块.设置角度模式("legacy")
-            map_path = str(MAP_PATH) if MAP_PATH.is_file() else 识别模块.大地图路径
+            map_path = self._map_path_for_cv2()
             self.识别器 = 识别模块.实时坐标角度识别器(
                 地图匹配器=识别模块.单独坐标识别器(map_path),
                 角度模式="legacy",
@@ -141,17 +157,33 @@ class 合并主界面:
             self.识别器 = None
             self.status_var.set(f"识别器初始化失败: {exc}")
 
+        # 巡航定位器可延迟创建；启动时再试，避免中文路径导致整窗不可用
+        self.巡航定位器 = None
+        self._try_init_cruise_locator(silent=True)
+
+    def _try_init_cruise_locator(self, silent: bool = False) -> bool:
+        if self.巡航定位器 is not None:
+            return True
         try:
-            map_path = str(MAP_PATH) if MAP_PATH.is_file() else 巡航模块.地图文件路径
-            self.巡航定位器 = 巡航模块.实时定位器(
-                地图路径=map_path,
-                角度模式="legacy",
-            )
-        except Exception as exc:
-            self.巡航定位器 = None
-            # 不覆盖识别器错误
-            if self.识别器 is not None:
-                self.status_var.set(f"巡航定位器初始化失败: {exc}")
+            os.chdir(str(ROOT))
+        except Exception:
+            pass
+        map_path = self._map_path_for_cv2()
+        mode = self.angle_mode_var.get() if hasattr(self, "angle_mode_var") else "legacy"
+        last_err = None
+        for path_try in (map_path, "maps/DB.png", 巡航模块.地图文件路径):
+            try:
+                self.巡航定位器 = 巡航模块.实时定位器(
+                    地图路径=path_try,
+                    角度模式=mode,
+                )
+                return True
+            except Exception as exc:
+                last_err = exc
+                self.巡航定位器 = None
+        if not silent and last_err is not None:
+            self.status_var.set(f"巡航定位器初始化失败: {last_err}")
+        return False
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
@@ -410,8 +442,13 @@ class 合并主界面:
         except ValueError as exc:
             messagebox.showerror("启动失败", str(exc))
             return
-        if self.巡航定位器 is None:
-            messagebox.showerror("启动失败", "巡航定位器未初始化")
+        if not self._try_init_cruise_locator(silent=False):
+            messagebox.showerror(
+                "启动失败",
+                "巡航定位器未初始化。\n"
+                "常见原因：地图路径含中文导致 OpenCV 读图失败。\n"
+                "请确认 maps/DB.png 存在，并以项目目录为工作目录启动。",
+            )
             return
 
         self._apply_angle_mode()
@@ -433,6 +470,7 @@ class 合并主界面:
         self.status_var.set(
             f"{巡航模块.构建开始状态文本(delay)} | 角度={label} | 到点={到点}"
         )
+        定位器 = self.巡航定位器
 
         def worker() -> None:
             try:
@@ -448,7 +486,7 @@ class 合并主界面:
                     route,
                     到点阈值=到点,
                     精准模式=bool(self.precise_var.get()),
-                    定位器=self.巡航定位器,
+                    定位器=定位器,
                     日志函数=log_fn,
                     停止事件=self._cruise_stop,
                 )
@@ -632,8 +670,7 @@ class 合并主界面:
 
 def main() -> None:
     # 工作目录切到项目根，保证 maps/ routes/ 相对路径可用
-    import os
-
+    # （cv2.imread 无法可靠读取含中文的绝对路径）
     os.chdir(str(ROOT))
     app = 合并主界面()
     app.run()
