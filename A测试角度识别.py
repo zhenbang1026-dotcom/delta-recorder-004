@@ -52,16 +52,25 @@ _text_stabilizer = None
 
 
 class _AngleStabilizer:
-    """text 控制向加稳：轻 EMA，大跳变几乎跟手（避免 turn_wait 读滞后角）。
+    """text 控制向加稳。
 
-    参数说明（配合 33.3 像素/度）：
-    - alpha 偏高：读数更快跟上真实转向，减少过冲后的“假角差”
-    - max_jump 放宽 + confirm=1：大转向不二次卡确认
+    配合 33.3 px/°：
+    - 小变化：较快 EMA 跟手
+    - 中等跳变（~25–70°）：要连续 2 帧接近才采信，抑制转向中野值
+    - 极大跳变（>90°）：更严，避免 251→127 这类一帧飞到对面
     """
 
-    def __init__(self, alpha=0.72, max_jump=55.0, confirm=1, confirm_match=12.0):
+    def __init__(
+        self,
+        alpha=0.65,
+        max_jump=28.0,
+        hard_jump=90.0,
+        confirm=2,
+        confirm_match=14.0,
+    ):
         self.alpha = float(alpha)
         self.max_jump = float(max_jump)
+        self.hard_jump = float(hard_jump)
         self.confirm = int(confirm)
         self.confirm_match = float(confirm_match)
         self.last = None
@@ -73,6 +82,14 @@ class _AngleStabilizer:
         self.pending = None
         self.pending_count = 0
 
+    def force(self, angle: float) -> float:
+        """外部稳采样后强制对齐（转向后中位数）。"""
+        angle = float(angle) % 360.0
+        self.last = angle
+        self.pending = None
+        self.pending_count = 0
+        return angle
+
     @staticmethod
     def _delta(a, b):
         return (b - a + 180.0) % 360.0 - 180.0
@@ -83,23 +100,25 @@ class _AngleStabilizer:
             self.last = angle
             return angle
         d = self._delta(self.last, angle)
-        if abs(d) > self.max_jump:
-            # confirm<=1：大跳变直接采信（text 读数准，卡确认会害控制）
-            if self.confirm <= 1:
-                self.last = angle
-                self.pending = None
-                self.pending_count = 0
-                return angle
-            if self.pending is not None and abs(self._delta(self.pending, angle)) <= self.confirm_match:
+        ad = abs(d)
+        need = self.confirm
+        if ad > self.hard_jump:
+            need = max(self.confirm, 2)
+        if ad > self.max_jump:
+            if (
+                self.pending is not None
+                and abs(self._delta(self.pending, angle)) <= self.confirm_match
+            ):
                 self.pending_count += 1
             else:
                 self.pending = angle
                 self.pending_count = 1
-            if self.pending_count >= self.confirm:
+            if self.pending_count >= need:
                 self.last = angle
                 self.pending = None
                 self.pending_count = 0
                 return angle
+            # 未确认：沿用上一帧，避免控制吃野值
             return float(self.last)
         blended = (self.last + self.alpha * d) % 360.0
         self.last = blended
@@ -134,6 +153,11 @@ def _get_text_stabilizer():
     if _text_stabilizer is None:
         _text_stabilizer = _AngleStabilizer()
     return _text_stabilizer
+
+
+def force_text_stabilizer_angle(angle: float) -> float:
+    """转向后稳采样写回滤波器，避免下一帧又被旧 last 拖住。"""
+    return _get_text_stabilizer().force(float(angle))
 
 
 def normalize_angle_mode(mode: str | None) -> str:
