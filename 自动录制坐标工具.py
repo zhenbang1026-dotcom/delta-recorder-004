@@ -203,11 +203,11 @@ def 绘制轨迹预览(
 class 自动录制坐标应用:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("自动录制坐标工具")
-        self.root.geometry("920x780+220+20")
-        self.root.minsize(780, 640)
+        self.root.title("自动录制坐标工具 · 004（角度可选）")
+        self.root.geometry("920x840+220+20")
+        self.root.minsize(780, 680)
 
-        self.识别器 = 基础模块.实时坐标角度识别器()
+        self.识别器 = 基础模块.实时坐标角度识别器(角度模式="legacy")
         self.录制器 = 自动坐标录制器()
         self.running = False
         self.recording = False
@@ -222,6 +222,8 @@ class 自动录制坐标应用:
 
         self.state_var = tk.StringVar(value="坐标: -- | 角度: -- | 录制: 未开始 | 点数: 0")
         self.status_var = tk.StringVar(value="未开始")
+        self.angle_mode_var = tk.StringVar(value="legacy")
+        self.angle_mode_hint = tk.StringVar(value="")
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(100, self._drain_queue)
@@ -242,6 +244,26 @@ class 自动录制坐标应用:
         self.stop_record_button.pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="清空本次记录", command=self.clear_records).pack(side="left")
 
+        mode_frame = ttk.LabelFrame(outer, text="角度识别（截图方式不变）", padding=8)
+        mode_frame.pack(fill="x", pady=(0, 8))
+        self._angle_radios = []
+        r1 = ttk.Radiobutton(
+            mode_frame, text="旧算法（颜色轮廓）", value="legacy",
+            variable=self.angle_mode_var, command=self._on_angle_mode_change,
+        )
+        r1.pack(anchor="w")
+        self._angle_radios.append(r1)
+        r2 = ttk.Radiobutton(
+            mode_frame, text="text 箭头算法（HSV+连通域+加稳）", value="text",
+            variable=self.angle_mode_var, command=self._on_angle_mode_change,
+        )
+        r2.pack(anchor="w")
+        self._angle_radios.append(r2)
+        ttk.Label(mode_frame, textvariable=self.angle_mode_hint, foreground="#555555").pack(
+            anchor="w", pady=(4, 0)
+        )
+        self._on_angle_mode_change()
+
         ttk.Label(outer, textvariable=self.state_var, font=("Segoe UI", 14, "bold")).pack(anchor="w")
         ttk.Label(outer, textvariable=self.status_var).pack(anchor="w", pady=(4, 10))
         self.preview_label = tk.Label(outer, bg="#111111", relief="sunken")
@@ -251,17 +273,39 @@ class 自动录制坐标应用:
 
         self._刷新预览()
 
+    def _on_angle_mode_change(self) -> None:
+        mode = self.angle_mode_var.get()
+        try:
+            基础模块.设置角度模式(mode)
+            label = 基础模块.当前角度模式标签()
+            bbox = 基础模块.当前角度区域()
+            self.angle_mode_hint.set(
+                f"当前: {label} | ROI {bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]} | 截图仍 GDI/mss"
+            )
+            if not self.running:
+                self.status_var.set(f"角度模式: {label}")
+        except Exception as exc:
+            self.status_var.set(f"切换角度模式失败: {exc}")
+
     def start_detection(self) -> None:
         if self.running:
             return
+        self._on_angle_mode_change()
         self.running = True
         self.stop_event.clear()
         self.log_path, self._记录日志 = 创建日志记录器("录制工具")
         self.录制器.日志函数 = self._记录日志
-        写日志(self._记录日志, "event=detect_start")
+        写日志(
+            self._记录日志,
+            "event=detect_start",
+            角度模式=基础模块.当前角度模式(),
+            角度标签=基础模块.当前角度模式标签(),
+        )
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
-        self.status_var.set("检测中...")
+        for w in self._angle_radios:
+            w.config(state="disabled")
+        self.status_var.set(f"检测中... | {基础模块.当前角度模式标签()}")
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
 
@@ -271,6 +315,8 @@ class 自动录制坐标应用:
         self.running = False
         self.stop_event.set()
         写日志(self._记录日志, "event=detect_stop")
+        for w in self._angle_radios:
+            w.config(state="normal")
 
     def start_recording(self) -> None:
         if not self.running:
@@ -349,6 +395,8 @@ class 自动录制坐标应用:
             elif kind == "stopped":
                 self.start_button.config(state="normal")
                 self.stop_button.config(state="disabled")
+                for w in getattr(self, "_angle_radios", []):
+                    w.config(state="normal")
                 if self.last_saved_path is None:
                     self.status_var.set("已停止检测")
                 else:

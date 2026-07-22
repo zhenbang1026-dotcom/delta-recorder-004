@@ -42,7 +42,8 @@ except ModuleNotFoundError:
 
 
 小地图区域 = 地图模块.SMALL_MAP_BOX
-角度区域 = 角度模块.parse_bbox(角度模块.ANGLE_DEFAULT_BBOX)
+# 默认旧算法 ROI；实际截图区随角度模式切换
+角度区域 = 角度模块.get_angle_bbox(角度模块.ANGLE_MODE_LEGACY)
 大地图路径 = 地图模块.BIG_MAP_PATH
 小地图宽度 = 地图模块.SIZE1
 小地图高度 = 地图模块.SIZE2
@@ -58,6 +59,22 @@ except ModuleNotFoundError:
 匹配最小缩放 = 1.0
 匹配最大缩放 = 3.2
 匹配最大旋转角度 = 15.0
+
+
+def 当前角度区域() -> tuple[int, int, int, int]:
+    return 角度模块.get_angle_bbox()
+
+
+def 设置角度模式(mode: str) -> str:
+    return 角度模块.set_angle_mode(mode)
+
+
+def 当前角度模式() -> str:
+    return 角度模块.get_angle_mode()
+
+
+def 当前角度模式标签() -> str:
+    return 角度模块.get_angle_mode_label()
 
 
 @dataclass
@@ -256,11 +273,14 @@ class 实时坐标角度识别器:
         地图匹配器=None,
         角度分析器: Optional[Callable] = None,
         角度颜色=None,
+        角度模式: Optional[str] = None,
     ) -> None:
         self.地图匹配器 = 地图匹配器 or 单独坐标识别器()
         self.角度分析器 = 角度分析器 or 角度模块.analyze_image
         self.角度颜色 = 角度颜色 or 默认角度颜色
         self.锁定角度颜色 = None
+        if 角度模式 is not None:
+            设置角度模式(角度模式)
 
     def 从截图识别(self, small_map_bgr, angle_image_bgr) -> 识别状态:
         map_result = self.地图匹配器.locate_minimap(small_map_bgr)
@@ -290,18 +310,20 @@ class 实时坐标角度识别器:
 
     def 读取状态(self) -> 识别状态:
         # 并集一次截图再裁（禁止对 ndarray 使用 `a or b`）
+        # 角度区随模式切换（legacy 小 ROI / text 大雷达）
+        角度区 = 当前角度区域()
         small_map_bgr = None
         angle_image_bgr = None
         if hasattr(角度模块, "grab_regions_bgr"):
             key_map = tuple(int(v) for v in 小地图区域)
-            key_ang = tuple(int(v) for v in 角度区域)
+            key_ang = tuple(int(v) for v in 角度区)
             crops = 角度模块.grab_regions_bgr(key_map, key_ang)
             small_map_bgr = crops.get(key_map)
             angle_image_bgr = crops.get(key_ang)
         if small_map_bgr is None:
             small_map_bgr, _ = 角度模块.grab_bbox_bgr(小地图区域)
         if angle_image_bgr is None:
-            angle_image_bgr, _ = 角度模块.grab_bbox_bgr(角度区域)
+            angle_image_bgr, _ = 角度模块.grab_bbox_bgr(角度区)
         return self.从截图识别(small_map_bgr, angle_image_bgr)
 
     def 生成预览图(self, 状态: 识别状态) -> np.ndarray:

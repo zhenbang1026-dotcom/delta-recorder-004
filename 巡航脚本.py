@@ -37,7 +37,10 @@ except ModuleNotFoundError:
 
 每度像素 = 100 / 3
 小地图区域 = (57, 116, 200, 235)
+# 默认旧算法 ROI；text 模式切换为 (34,78,227,271)
 角度区域 = (119, 161, 146, 188)
+角度区域_旧 = (119, 161, 146, 188)
+角度区域_text = (34, 78, 227, 271)
 地图文件路径 = "maps/DB.png"
 小地图宽度 = 143
 小地图高度 = 119
@@ -444,10 +447,19 @@ class 实时定位器:
         *,
         地图路径: str = 地图文件路径,
         小地图截图区域: tuple[int, int, int, int] = 小地图区域,
-        角度截图区域: tuple[int, int, int, int] = 角度区域,
+        角度截图区域: tuple[int, int, int, int] | None = None,
+        角度模式: str | None = None,
     ):
         self._加载依赖()
         self.小地图截图区域 = 小地图截图区域
+        if 角度模式 is not None:
+            合并识别模块.设置角度模式(角度模式)
+        self.角度模式 = 合并识别模块.当前角度模式()
+        if 角度截图区域 is None:
+            try:
+                角度截图区域 = 合并识别模块.当前角度区域()
+            except Exception:
+                角度截图区域 = 角度区域
         self.角度截图区域 = 角度截图区域
         self.大地图 = self._cv2.imread(str(Path(地图路径)))
         if self.大地图 is None:
@@ -480,6 +492,17 @@ class 实时定位器:
         self._合并识别器 = 合并识别模块.实时坐标角度识别器(
             地图匹配器=合并识别模块.单独坐标识别器(地图路径)
         )
+
+    def 设置角度模式(self, 模式: str) -> str:
+        """切换角度算法并同步 ROI；截图后端不变。"""
+        mode = 合并识别模块.设置角度模式(模式)
+        self.角度模式 = mode
+        try:
+            self.角度截图区域 = 合并识别模块.当前角度区域()
+        except Exception:
+            self.角度截图区域 = 角度区域_text if mode == "text" else 角度区域_旧
+        self.最近状态 = None
+        return mode
 
     def _加载依赖(self) -> None:
         try:
@@ -1645,28 +1668,46 @@ def 刷新识别状态(
 def 启动巡航界面() -> None:
     import threading
     import tkinter as tk
-    from tkinter import filedialog, messagebox
+    from tkinter import filedialog, messagebox, ttk
 
     root = tk.Tk()
-    root.title("巡航启动器 · 004（稳定截图优化）")
-    root.geometry("860x740")
-    root.minsize(760, 620)
+    root.title("巡航启动器 · 004（角度可选）")
+    root.geometry("900x800")
+    root.minsize(780, 680)
 
     路径变量 = tk.StringVar()
     状态变量 = tk.StringVar(value="请选择路线文件")
     识别状态变量 = tk.StringVar(value=格式化识别状态文本())
     诊断状态变量 = tk.StringVar(value=格式化诊断状态文本())
     控制详情变量 = tk.StringVar(value=格式化控制详情文本())
+    角度模式变量 = tk.StringVar(value="legacy")
+    角度模式说明 = tk.StringVar(value="")
     预览照片 = {"image": None}
     停止事件 = threading.Event()
     巡航中 = {"value": False}
 
     try:
-        监视定位器 = 实时定位器()
+        监视定位器 = 实时定位器(角度模式="legacy")
     except Exception as exc:
         监视定位器 = None
         识别状态变量.set(格式化识别状态文本(错误=str(exc)))
         诊断状态变量.set(f"诊断: 控制=初始化失败 | 识别={str(exc)}")
+
+    def 同步角度模式说明() -> None:
+        mode = 角度模式变量.get()
+        if mode == "text":
+            角度模式说明.set(
+                "text 箭头：HSV+连通域+加稳 | 雷达 34,78,227,271 | 截图仍用 GDI/mss"
+            )
+        else:
+            角度模式说明.set(
+                "旧算法：颜色轮廓 | 角度区 119,161,146,188 | 截图仍用 GDI/mss"
+            )
+        if 监视定位器 is not None and not 巡航中["value"]:
+            try:
+                监视定位器.设置角度模式(mode)
+            except Exception as exc:
+                状态变量.set(f"切换角度模式失败: {exc}")
 
     def 更新预览图(图像bgr) -> None:
         预览照片["image"] = 缩放为Tk图片(图像bgr)
@@ -1685,6 +1726,8 @@ def 启动巡航界面() -> None:
         巡航中["value"] = False
         开始按钮.config(state="normal")
         选择按钮.config(state="normal")
+        for w in 角度单选:
+            w.config(state="normal")
 
     def 安全派发(callback) -> None:
         try:
@@ -1706,11 +1749,22 @@ def 启动巡航界面() -> None:
         except ValueError as exc:
             messagebox.showerror("启动失败", str(exc))
             return
+        if 监视定位器 is None:
+            messagebox.showerror("启动失败", "定位器未初始化")
+            return
+        try:
+            监视定位器.设置角度模式(角度模式变量.get())
+        except Exception as exc:
+            messagebox.showerror("启动失败", f"角度模式无效: {exc}")
+            return
 
         开始按钮.config(state="disabled")
         选择按钮.config(state="disabled")
+        for w in 角度单选:
+            w.config(state="disabled")
         巡航中["value"] = True
-        状态变量.set(构建开始状态文本(默认启动延迟秒数))
+        标签 = 合并识别模块.当前角度模式标签()
+        状态变量.set(f"{构建开始状态文本(默认启动延迟秒数)} | 角度={标签}")
 
         def worker() -> None:
             try:
@@ -1728,12 +1782,33 @@ def 启动巡航界面() -> None:
 
     tk.Label(root, text="路线文件").pack(anchor="w", padx=20, pady=(18, 6))
     tk.Entry(root, textvariable=路径变量, state="readonly", width=62).pack(padx=20, fill="x")
+
+    模式框 = tk.LabelFrame(root, text="角度识别（截图方式不变）", padx=10, pady=8)
+    模式框.pack(anchor="w", padx=20, pady=(12, 0), fill="x")
+    角度单选 = []
+    r1 = ttk.Radiobutton(
+        模式框, text="旧算法（颜色轮廓，legacy）", value="legacy",
+        variable=角度模式变量, command=同步角度模式说明,
+    )
+    r1.pack(anchor="w")
+    角度单选.append(r1)
+    r2 = ttk.Radiobutton(
+        模式框, text="text 箭头算法（HSV+连通域+加稳）", value="text",
+        variable=角度模式变量, command=同步角度模式说明,
+    )
+    r2.pack(anchor="w")
+    角度单选.append(r2)
+    tk.Label(模式框, textvariable=角度模式说明, fg="#555555", anchor="w", justify="left").pack(
+        anchor="w", pady=(4, 0)
+    )
+    同步角度模式说明()
+
     tk.Label(
         root,
-        text="004 优化：GDI稳定截图 + 并集一截两裁 + 寻路暂停UI识别 + 日志缓冲",
+        text="截图：GDI→mss→PIL 并集一截两裁；寻路中暂停 UI 识别",
         fg="#555555",
         anchor="w",
-    ).pack(anchor="w", padx=20, pady=(4, 0))
+    ).pack(anchor="w", padx=20, pady=(6, 0))
 
     按钮框 = tk.Frame(root)
     按钮框.pack(anchor="w", padx=20, pady=12)

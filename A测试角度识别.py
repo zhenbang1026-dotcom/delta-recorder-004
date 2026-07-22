@@ -30,9 +30,149 @@ from PIL import Image, ImageGrab, ImageTk
 DEFAULT_INTERVAL = 0.2
 ANGLE_DEFAULT_COLORS = ["F0E791", "9AE77E", "95BBE8", "94BAE8", "94BAE7", "84A4CA", "8EB2DE"]
 ANGLE_DEFAULT_IMAGE = "实时截图.png"
-ANGLE_DEFAULT_BBOX = "119,161,146,188"
+# 旧算法 ROI
+ANGLE_LEGACY_BBOX = "119,161,146,188"
+# text 雷达 ROI left,top,right,bottom
+ANGLE_TEXT_BBOX = "34,78,227,271"
+ANGLE_DEFAULT_BBOX = ANGLE_LEGACY_BBOX
 ANGLE_DEFAULT_TOLERANCE = "45"
 ANGLE_DEFAULT_MIN_AREA = "0"
+
+# 角度模式：legacy=旧颜色轮廓 | text=text箭头（可加稳）
+ANGLE_MODE_LEGACY = "legacy"
+ANGLE_MODE_TEXT = "text"
+ANGLE_MODE_LABELS = {
+    ANGLE_MODE_LEGACY: "旧算法（颜色轮廓）",
+    ANGLE_MODE_TEXT: "text箭头算法",
+}
+_angle_mode = ANGLE_MODE_LEGACY
+_angle_mode_lock = threading.Lock()
+_text_recognizer = None
+_text_stabilizer = None
+
+
+class _AngleStabilizer:
+    """text 模式轻量加稳：EMA + 大跳变二次确认。"""
+
+    def __init__(self, alpha=0.40, max_jump=35.0, confirm=2, confirm_match=10.0):
+        self.alpha = float(alpha)
+        self.max_jump = float(max_jump)
+        self.confirm = int(confirm)
+        self.confirm_match = float(confirm_match)
+        self.last = None
+        self.pending = None
+        self.pending_count = 0
+
+    def reset(self):
+        self.last = None
+        self.pending = None
+        self.pending_count = 0
+
+    @staticmethod
+    def _delta(a, b):
+        return (b - a + 180.0) % 360.0 - 180.0
+
+    def update(self, angle: float) -> float:
+        angle = float(angle) % 360.0
+        if self.last is None:
+            self.last = angle
+            return angle
+        d = self._delta(self.last, angle)
+        if abs(d) > self.max_jump:
+            if self.pending is not None and abs(self._delta(self.pending, angle)) <= self.confirm_match:
+                self.pending_count += 1
+            else:
+                self.pending = angle
+                self.pending_count = 1
+            if self.pending_count >= self.confirm:
+                self.last = angle
+                self.pending = None
+                self.pending_count = 0
+                return angle
+            return float(self.last)
+        blended = (self.last + self.alpha * d) % 360.0
+        self.last = blended
+        self.pending = None
+        self.pending_count = 0
+        return blended
+
+
+def _get_text_recognizer():
+    global _text_recognizer
+    if _text_recognizer is not None:
+        return _text_recognizer
+    import importlib.util
+    import unicodedata
+
+    base = Path(__file__).resolve().parent
+    target = unicodedata.normalize("NFC", "识别角度")
+    for py in base.glob("*.py"):
+        if unicodedata.normalize("NFC", py.stem) == target:
+            name = "text_angle_mod_004"
+            spec = importlib.util.spec_from_file_location(name, py)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[name] = mod
+            spec.loader.exec_module(mod)
+            _text_recognizer = mod.默认识别器(静默=True)
+            return _text_recognizer
+    raise ModuleNotFoundError("未找到 识别角度.py")
+
+
+def _get_text_stabilizer():
+    global _text_stabilizer
+    if _text_stabilizer is None:
+        _text_stabilizer = _AngleStabilizer()
+    return _text_stabilizer
+
+
+def normalize_angle_mode(mode: str | None) -> str:
+    value = (mode or ANGLE_MODE_LEGACY).strip().lower()
+    aliases = {
+        "legacy": ANGLE_MODE_LEGACY,
+        "old": ANGLE_MODE_LEGACY,
+        "旧": ANGLE_MODE_LEGACY,
+        "旧算法": ANGLE_MODE_LEGACY,
+        "text": ANGLE_MODE_TEXT,
+        "text_stable": ANGLE_MODE_TEXT,
+        "new": ANGLE_MODE_TEXT,
+        "新": ANGLE_MODE_TEXT,
+        "箭头": ANGLE_MODE_TEXT,
+    }
+    if value in aliases:
+        return aliases[value]
+    if value in (ANGLE_MODE_LEGACY, ANGLE_MODE_TEXT):
+        return value
+    raise ValueError(f"未知角度模式: {mode}")
+
+
+def set_angle_mode(mode: str) -> str:
+    global _angle_mode
+    mode = normalize_angle_mode(mode)
+    with _angle_mode_lock:
+        _angle_mode = mode
+        if mode == ANGLE_MODE_TEXT:
+            _get_text_stabilizer().reset()
+    return mode
+
+
+def get_angle_mode() -> str:
+    with _angle_mode_lock:
+        return _angle_mode
+
+
+def get_angle_bbox_str(mode: str | None = None) -> str:
+    mode = normalize_angle_mode(mode or get_angle_mode())
+    return ANGLE_TEXT_BBOX if mode == ANGLE_MODE_TEXT else ANGLE_LEGACY_BBOX
+
+
+def get_angle_bbox(mode: str | None = None) -> tuple[int, int, int, int]:
+    return parse_bbox(get_angle_bbox_str(mode))
+
+
+def get_angle_mode_label(mode: str | None = None) -> str:
+    mode = normalize_angle_mode(mode or get_angle_mode())
+    return ANGLE_MODE_LABELS.get(mode, mode)
+
 
 # ===========================================================================
 # 通用工具函数
@@ -595,27 +735,8 @@ class AnalysisResult:
         self.color_hex = color_hex
 
 
-def analyze_image(image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
-    """
-    综合分析图像，尝试多种颜色通道进行角度识别
-    
-    按颜色列表顺序尝试，一旦某个颜色成功即返回结果。
-    
-    Args:
-        image_bgr (numpy.ndarray): BGR格式输入图像
-        colors (list): 颜色列表 [(hex_str, (R,G,B)), ...]
-        tolerance (int): 颜色容差
-        min_area (float): 最小轮廓面积
-        clean_mask (bool): 是否清理噪声
-        region (tuple or None): 识别区域
-        hsv_mode (bool): 是否使用HSV模式
-        
-    Returns:
-        AnalysisResult: 分析结果对象
-        
-    Raises:
-        RuntimeError: 所有颜色都匹配失败时抛出，包含所有错误信息
-    """
+def _analyze_image_legacy(image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
+    """旧算法：多颜色轮廓 + 北向 atan2。"""
     cropped, offset = crop_region(image_bgr, region)
     errors = []
     for color_hex, color_rgb in colors:
@@ -633,6 +754,47 @@ def analyze_image(image_bgr, colors, tolerance, min_area, clean_mask, region, hs
                 last_error = exc
         errors.append(f"#{color_hex}: {last_error}")
     raise RuntimeError("没有匹配到配置颜色。" + " | ".join(errors))
+
+
+def _analyze_image_text(image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
+    """text 箭头算法 + 轻量加稳。截图方式不变，只换识别。"""
+    del colors, tolerance, min_area, clean_mask, hsv_mode
+    cropped, offset = crop_region(image_bgr, region)
+    recognizer = _get_text_recognizer()
+    raw = recognizer.识别角度(图像数据=cropped, 显示=False)
+    if raw is None:
+        raise RuntimeError("无法识别当前朝向（text箭头算法）")
+    angle = _get_text_stabilizer().update(float(raw))
+    detail = recognizer.最近详情 or {}
+    origin = detail.get("origin") or (0.0, 0.0)
+    target = detail.get("target") or origin
+    mask = detail.get("mask")
+    debug_src = detail.get("debug")
+    if debug_src is not None:
+        debug = draw_angle_debug(debug_src, float(angle), origin, target, [])
+    else:
+        debug = draw_angle_debug(cropped, float(angle), origin, target, [])
+    if mask is None:
+        mask = np.zeros(cropped.shape[:2], dtype=np.uint8)
+    return AnalysisResult(
+        float(angle), origin, target, debug, mask, offset, "9AE77E"
+    )
+
+
+def analyze_image(image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
+    """
+    角度分析入口（按全局模式分发）。
+    - legacy: 旧颜色轮廓
+    - text: text 箭头 + 加稳
+    截图仍走 grab_bbox_bgr / 截图模块，不在此改截图。
+    """
+    if get_angle_mode() == ANGLE_MODE_TEXT:
+        return _analyze_image_text(
+            image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode
+        )
+    return _analyze_image_legacy(
+        image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode
+    )
 
 
 def analyze_fullscreen_angle(
