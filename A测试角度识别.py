@@ -52,9 +52,14 @@ _text_stabilizer = None
 
 
 class _AngleStabilizer:
-    """text 模式轻量加稳：EMA + 大跳变二次确认。"""
+    """text 控制向加稳：轻 EMA，大跳变几乎跟手（避免 turn_wait 读滞后角）。
 
-    def __init__(self, alpha=0.40, max_jump=35.0, confirm=2, confirm_match=10.0):
+    参数说明（配合 33.3 像素/度）：
+    - alpha 偏高：读数更快跟上真实转向，减少过冲后的“假角差”
+    - max_jump 放宽 + confirm=1：大转向不二次卡确认
+    """
+
+    def __init__(self, alpha=0.72, max_jump=55.0, confirm=1, confirm_match=12.0):
         self.alpha = float(alpha)
         self.max_jump = float(max_jump)
         self.confirm = int(confirm)
@@ -79,6 +84,12 @@ class _AngleStabilizer:
             return angle
         d = self._delta(self.last, angle)
         if abs(d) > self.max_jump:
+            # confirm<=1：大跳变直接采信（text 读数准，卡确认会害控制）
+            if self.confirm <= 1:
+                self.last = angle
+                self.pending = None
+                self.pending_count = 0
+                return angle
             if self.pending is not None and abs(self._delta(self.pending, angle)) <= self.confirm_match:
                 self.pending_count += 1
             else:
