@@ -21,11 +21,31 @@
 cd "D:\Azhuomian\GitHub\三角洲项目相关文件\三角洲录制器004"
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
+# 推荐：合并主界面（录制 + 回放）
+.\.venv\Scripts\python 主界面.py
+# 或双击 start.bat
+```
+
+也可单独跑旧入口（未改逻辑）：
+
+```powershell
 .\.venv\Scripts\python 巡航脚本.py
 .\.venv\Scripts\python 自动录制坐标工具.py
 ```
 
 可选环境变量：`DELTA_CAPTURE_BACKEND=gdi|mss|pil`
+
+## 合并主界面（主界面.py）
+
+| 功能 | 说明 |
+|------|------|
+| 开始/停止识别 | 实时坐标+角度 |
+| 开始/停止录制 | 防跳变抽稀，保存到 `录制结果/` 与 `routes/` |
+| 路线列表 | 自动汇总 `routes/` + `录制结果/` |
+| 开始/停止回放 | 调用旧 `巡航()`，Esc 紧急停止 |
+| 角度模式 | legacy / text（截图方式不变） |
+
+**不修改** 旧 py 文件，仅新建 `主界面.py` 做 UI 编排。
 
 ## 与 003 的区别
 
