@@ -146,7 +146,8 @@ def _get_fusion_precise_recognizer():
 
 
 def reset_fusion_selector() -> None:
-    _get_fusion_selector().reset()
+    if _fusion_selector is not None:
+        _fusion_selector.reset()
     if _fusion_precise_recognizer is not None:
         _fusion_precise_recognizer.reset()
 
@@ -878,18 +879,30 @@ def _analyze_image_fusion(image_bgr, colors, tolerance, min_area, clean_mask, re
     except Exception as exc:
         legacy_error = exc
 
+    selector = _get_fusion_selector()
     precise_observation = None
     if precise_result is not None:
+        precise_angle = float(precise_result.angle)
+        precise_confidence = float(getattr(precise_result, "confidence", 0.8))
+        if not math.isfinite(precise_angle):
+            precise_error = f"精准三色角度非有限：{precise_angle}"
+        elif not math.isfinite(precise_confidence):
+            precise_error = f"精准三色质量非有限：{precise_confidence}"
+        elif precise_confidence < selector.min_confidence:
+            precise_error = (
+                f"精准三色质量{precise_confidence:g}低于融合门槛"
+                f"{selector.min_confidence:g}"
+            )
         precise_observation = 角度观测(
-            precise_result.angle,
-            float(getattr(precise_result, "confidence", 0.8)),
+            precise_angle,
+            precise_confidence,
             "text",
         )
     legacy_observation = None
     if legacy_result is not None:
         legacy_observation = 角度观测(legacy_result.angle, 0.75, "legacy")
     try:
-        fused = _get_fusion_selector().update(precise_observation, legacy_observation)
+        fused = selector.update(precise_observation, legacy_observation)
     except 角度融合失败 as exc:
         details = f"精准三色={precise_error}; Legacy={legacy_error}"
         raise RuntimeError(f"无法识别当前朝向（融合算法）：{details}") from exc

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import inspect
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -317,27 +318,122 @@ def testlegacy和text模式分析不创建三色精准识别器(monkeypatch) -> 
 
 
 def test进入fusion和重置只重置已存在精准实例且不触发加载(monkeypatch) -> None:
-    def forbidden_getter():
-        raise AssertionError("进入Fusion或重置不得惰性加载三色精准识别器")
-
+    monkeypatch.setattr(角度模式模块, "_fusion_selector", None)
     monkeypatch.setattr(角度模式模块, "_fusion_precise_recognizer", None, raising=False)
-    monkeypatch.setattr(角度模式模块, "_get_fusion_precise_recognizer", forbidden_getter, raising=False)
 
     角度模式模块.reset_fusion_selector()
+    assert 角度模式模块._fusion_selector is None
+    assert 角度模式模块._fusion_precise_recognizer is None
     assert 角度模式模块.set_angle_mode("fusion") == "fusion"
+    assert 角度模式模块._fusion_selector is None
+    assert 角度模式模块._fusion_precise_recognizer is None
 
-    class ExistingPreciseRecognizer:
+    class ExistingResettable:
         def __init__(self):
             self.reset_count = 0
 
         def reset(self):
             self.reset_count += 1
 
-    existing = ExistingPreciseRecognizer()
-    monkeypatch.setattr(角度模式模块, "_fusion_precise_recognizer", existing)
+    existing_selector = ExistingResettable()
+    existing_precise = ExistingResettable()
+    monkeypatch.setattr(角度模式模块, "_fusion_selector", existing_selector)
+    monkeypatch.setattr(角度模式模块, "_fusion_precise_recognizer", existing_precise)
 
     角度模式模块.reset_fusion_selector()
-    assert existing.reset_count == 1
+    assert existing_selector.reset_count == 1
+    assert existing_precise.reset_count == 1
     assert 角度模式模块.set_angle_mode("fusion") == "fusion"
-    assert existing.reset_count == 2
+    assert existing_selector.reset_count == 2
+    assert existing_precise.reset_count == 2
     角度模式模块.set_angle_mode("legacy")
+
+
+def testfusion低质量精准观测降级legacy并保留可读诊断(monkeypatch) -> None:
+    class LowQualityPreciseRecognizer:
+        最近错误 = None
+
+        def reset(self):
+            pass
+
+        def 识别(self, image):
+            return SimpleNamespace(
+                angle=50.0,
+                color="黄色",
+                confidence=0.0975,
+                details={"color_hex": "F0E791"},
+            )
+
+    def good_legacy(image, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
+        return 角度模式模块.AnalysisResult(
+            51.0, (13.0, 13.0), (14.0, 13.0), image.copy(),
+            np.zeros(image.shape[:2], dtype=np.uint8), region[:2], "LEGACY"
+        )
+
+    monkeypatch.setattr(
+        角度模式模块, "_fusion_precise_recognizer", LowQualityPreciseRecognizer()
+    )
+    monkeypatch.setattr(角度模式模块, "_analyze_image_legacy", good_legacy)
+    monkeypatch.setattr(角度模式模块, "_fusion_selector", None)
+
+    result = 角度模式模块._analyze_image_fusion(
+        np.zeros((193, 193, 3), dtype=np.uint8),
+        [("FFFFFF", (255, 255, 255))], 45, 0, False, None, False,
+    )
+
+    assert result.observation_source == "legacy"
+    assert result.fusion_reason == "精准三色 无效，降级 Legacy"
+    assert result.precise_color == "黄色"
+    assert result.precise_quality == 0.0975
+    assert "质量" in result.precise_error
+    assert "0.0975" in result.precise_error
+    assert "0.5" in result.precise_error
+    assert result.text_error == result.precise_error
+    assert result.fusion_difference == 1.0
+
+
+@pytest.mark.parametrize(
+    ("angle", "confidence", "error_fragment"),
+    [
+        (math.nan, 0.9, "角度非有限"),
+        (50.0, math.inf, "质量非有限"),
+    ],
+)
+def testfusion非有限精准观测降级legacy且不崩溃(
+    monkeypatch, angle: float, confidence: float, error_fragment: str
+) -> None:
+    class NonFinitePreciseRecognizer:
+        最近错误 = None
+
+        def reset(self):
+            pass
+
+        def 识别(self, image):
+            return SimpleNamespace(
+                angle=angle,
+                color="绿色",
+                confidence=confidence,
+                details={"color_hex": "9AE77E"},
+            )
+
+    def good_legacy(image, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
+        return 角度模式模块.AnalysisResult(
+            52.0, (13.0, 13.0), (14.0, 13.0), image.copy(),
+            np.zeros(image.shape[:2], dtype=np.uint8), region[:2], "LEGACY"
+        )
+
+    monkeypatch.setattr(
+        角度模式模块, "_fusion_precise_recognizer", NonFinitePreciseRecognizer()
+    )
+    monkeypatch.setattr(角度模式模块, "_analyze_image_legacy", good_legacy)
+    monkeypatch.setattr(角度模式模块, "_fusion_selector", None)
+
+    result = 角度模式模块._analyze_image_fusion(
+        np.zeros((193, 193, 3), dtype=np.uint8),
+        [("FFFFFF", (255, 255, 255))], 45, 0, False, None, False,
+    )
+
+    assert result.observation_source == "legacy"
+    assert result.fusion_reason == "精准三色 无效，降级 Legacy"
+    assert error_fragment in result.precise_error
+    assert result.text_error == result.precise_error
