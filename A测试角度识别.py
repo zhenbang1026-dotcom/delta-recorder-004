@@ -47,7 +47,7 @@ ANGLE_MODE_FUSION = "fusion"
 ANGLE_MODE_LABELS = {
     ANGLE_MODE_LEGACY: "旧算法（颜色轮廓）",
     ANGLE_MODE_TEXT: "text箭头算法",
-    ANGLE_MODE_FUSION: "融合算法（TEXT主观测+Legacy降级）",
+    ANGLE_MODE_FUSION: "融合算法（三色精准主观测+Legacy降级）",
 }
 ANGLE_FUSION_LEGACY_REGION = (85, 83, 112, 110)
 _angle_mode = ANGLE_MODE_LEGACY
@@ -55,6 +55,7 @@ _angle_mode_lock = threading.Lock()
 _text_recognizer = None
 _text_stabilizer = None
 _fusion_selector = None
+_fusion_precise_recognizer = None
 
 
 class _AngleStabilizer:
@@ -135,8 +136,19 @@ def _get_fusion_selector():
     return _fusion_selector
 
 
+def _get_fusion_precise_recognizer():
+    global _fusion_precise_recognizer
+    if _fusion_precise_recognizer is None:
+        from 三色精准角度 import 三色精准角度识别器
+
+        _fusion_precise_recognizer = 三色精准角度识别器()
+    return _fusion_precise_recognizer
+
+
 def reset_fusion_selector() -> None:
     _get_fusion_selector().reset()
+    if _fusion_precise_recognizer is not None:
+        _fusion_precise_recognizer.reset()
 
 
 def force_fusion_selector_angle(angle: float) -> float:
@@ -816,18 +828,43 @@ def _analyze_image_text(image_bgr, colors, tolerance, min_area, clean_mask, regi
 
 
 def _analyze_image_fusion(image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
-    """同一 TEXT 大图内并行取 TEXT 与 Legacy 观测并选择可信来源。"""
+    """同一大图内并行取三色精准与 Legacy 观测并选择可信来源。"""
     cropped, offset = crop_region(image_bgr, region)
-    text_result = None
+    precise_result = None
     legacy_result = None
-    text_error = None
+    precise_color = None
+    precise_quality = None
+    precise_error = None
     legacy_error = None
     try:
-        text_result = _analyze_image_text_raw(
-            cropped, colors, tolerance, min_area, clean_mask, None, hsv_mode
-        )
+        recognizer = _get_fusion_precise_recognizer()
+        precise = recognizer.识别(cropped)
+        if precise is None:
+            precise_error = getattr(recognizer, "最近错误", None) or "未识别到三色精准角度"
+        else:
+            details = precise.details if isinstance(precise.details, dict) else {}
+            origin = details.get("origin") or (0.0, 0.0)
+            target = details.get("target") or origin
+            debug = details.get("debug")
+            if debug is None:
+                debug = cropped.copy()
+            mask = details.get("mask")
+            if mask is None:
+                mask = np.zeros(cropped.shape[:2], dtype=np.uint8)
+            precise_color = str(precise.color)
+            precise_quality = float(precise.confidence)
+            precise_result = AnalysisResult(
+                float(precise.angle),
+                origin,
+                target,
+                debug,
+                mask,
+                details.get("offset") or (0, 0),
+                str(details.get("color_hex") or "PRECISE"),
+            )
+            precise_result.confidence = precise_quality
     except Exception as exc:
-        text_error = exc
+        precise_error = str(exc)
     try:
         legacy_result = _analyze_image_legacy(
             cropped,
@@ -841,32 +878,32 @@ def _analyze_image_fusion(image_bgr, colors, tolerance, min_area, clean_mask, re
     except Exception as exc:
         legacy_error = exc
 
-    text_observation = None
-    if text_result is not None:
-        text_observation = 角度观测(
-            text_result.angle,
-            float(getattr(text_result, "confidence", 0.8)),
+    precise_observation = None
+    if precise_result is not None:
+        precise_observation = 角度观测(
+            precise_result.angle,
+            float(getattr(precise_result, "confidence", 0.8)),
             "text",
         )
     legacy_observation = None
     if legacy_result is not None:
         legacy_observation = 角度观测(legacy_result.angle, 0.75, "legacy")
     try:
-        fused = _get_fusion_selector().update(text_observation, legacy_observation)
+        fused = _get_fusion_selector().update(precise_observation, legacy_observation)
     except 角度融合失败 as exc:
-        details = f"TEXT={text_error}; Legacy={legacy_error}"
+        details = f"精准三色={precise_error}; Legacy={legacy_error}"
         raise RuntimeError(f"无法识别当前朝向（融合算法）：{details}") from exc
 
     fusion_difference = None
-    if text_result is not None and legacy_result is not None:
+    if precise_result is not None and legacy_result is not None:
         fusion_difference = abs(
-            (float(legacy_result.angle) - float(text_result.angle) + 180.0)
+            (float(legacy_result.angle) - float(precise_result.angle) + 180.0)
             % 360.0
             - 180.0
         )
 
     if fused.source == "text":
-        result = text_result
+        result = precise_result
     elif fused.source == "legacy":
         result = legacy_result
     else:
@@ -883,11 +920,14 @@ def _analyze_image_fusion(image_bgr, colors, tolerance, min_area, clean_mask, re
         local_x, local_y = getattr(result, "offset", (0, 0))
         result.offset = (offset[0] + local_x, offset[1] + local_y)
     result.angle = float(fused.angle)
-    result.observation_source = fused.source
+    result.observation_source = "precise" if fused.source == "text" else fused.source
     result.confidence = float(fused.confidence)
-    result.fusion_reason = fused.reason
+    result.fusion_reason = fused.reason.replace("TEXT", "精准三色")
     result.fusion_difference = fusion_difference
-    result.text_error = None if text_error is None else str(text_error)
+    result.precise_color = precise_color
+    result.precise_quality = precise_quality
+    result.precise_error = precise_error
+    result.text_error = precise_error
     result.legacy_error = None if legacy_error is None else str(legacy_error)
     return result
 

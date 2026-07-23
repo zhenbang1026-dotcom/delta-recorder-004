@@ -4,8 +4,10 @@ import ast
 import hashlib
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 import A测试角度识别 as 角度模式模块
 
@@ -67,7 +69,7 @@ def testfusion别名标签和roi且切回legacy不变() -> None:
     assert 角度模式模块.normalize_angle_mode("融合") == "fusion"
     assert 角度模式模块.normalize_angle_mode("overall") == "fusion"
     assert 角度模式模块.set_angle_mode("fusion") == "fusion"
-    assert 角度模式模块.get_angle_mode_label() == "融合算法（TEXT主观测+Legacy降级）"
+    assert 角度模式模块.get_angle_mode_label() == "融合算法（三色精准主观测+Legacy降级）"
     assert 角度模式模块.get_angle_bbox() == (34, 78, 227, 271)
 
     assert 角度模式模块.set_angle_mode("legacy") == "legacy"
@@ -85,15 +87,30 @@ def testadaptive_text滤波只平滑小抖动正常转向直接跟随() -> None:
     assert abs(角度模式模块._AngleStabilizer._delta(wrapped, 0.0)) < 1e-9
 
 
-def testfusion在同一text大图裁出legacy相对roi(monkeypatch) -> None:
-    calls = {"text_angle": 50.0, "legacy_angle": 51.0}
+def testfusion在同一精准大图裁出legacy相对roi且对外映射精准来源(monkeypatch) -> None:
+    calls = {"precise_angle": 50.0, "legacy_angle": 51.0}
 
-    def fake_text(image, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
-        calls["text_shape"] = image.shape
-        return 角度模式模块.AnalysisResult(
-            calls["text_angle"], (100.0, 100.0), (110.0, 100.0), image.copy(),
-            np.zeros(image.shape[:2], dtype=np.uint8), (0, 0), "TEXT"
-        )
+    class FakePreciseRecognizer:
+        最近错误 = None
+
+        def reset(self):
+            pass
+
+        def 识别(self, image):
+            calls["precise_shape"] = image.shape
+            return SimpleNamespace(
+                angle=calls["precise_angle"],
+                color="绿色",
+                confidence=0.9,
+                details={
+                    "origin": (100.0, 100.0),
+                    "target": (110.0, 100.0),
+                    "debug": image.copy(),
+                    "mask": np.zeros(image.shape[:2], dtype=np.uint8),
+                    "offset": (0, 0),
+                    "color_hex": "9AE77E",
+                },
+            )
 
     def fake_legacy(image, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
         calls["legacy_region"] = region
@@ -102,7 +119,7 @@ def testfusion在同一text大图裁出legacy相对roi(monkeypatch) -> None:
             np.zeros(image.shape[:2], dtype=np.uint8), region[:2], "LEGACY"
         )
 
-    monkeypatch.setattr(角度模式模块, "_analyze_image_text_raw", fake_text)
+    monkeypatch.setattr(角度模式模块, "_fusion_precise_recognizer", FakePreciseRecognizer(), raising=False)
     monkeypatch.setattr(角度模式模块, "_analyze_image_legacy", fake_legacy)
     角度模式模块.reset_fusion_selector()
     image = np.zeros((240, 240, 3), dtype=np.uint8)
@@ -112,16 +129,21 @@ def testfusion在同一text大图裁出legacy相对roi(monkeypatch) -> None:
         image, [("FFFFFF", (255, 255, 255))], 45, 0, False, outer_region, False
     )
 
-    assert calls["text_shape"] == (193, 193, 3)
+    assert calls["precise_shape"] == (193, 193, 3)
     assert calls["legacy_region"] == (85, 83, 112, 110)
     assert result.angle == 50.0
-    assert result.observation_source == "text"
+    assert result.observation_source == "precise"
     assert result.offset == (10, 20)
     assert result.fusion_difference == 1.0
+    assert result.precise_color == "绿色"
+    assert result.precise_quality == 0.9
+    assert result.precise_error is None
     assert result.text_error is None
     assert result.legacy_error is None
+    assert "精准三色" in result.fusion_reason
+    assert "TEXT" not in result.fusion_reason
 
-    calls["text_angle"] = 150.0
+    calls["precise_angle"] = 150.0
     角度模式模块.reset_fusion_selector()
     legacy_result = 角度模式模块._analyze_image_fusion(
         image, [("FFFFFF", (255, 255, 255))], 45, 0, False, outer_region, False
@@ -131,9 +153,15 @@ def testfusion在同一text大图裁出legacy相对roi(monkeypatch) -> None:
     assert legacy_result.fusion_difference == 99.0
 
 
-def testfusion结果记录单路错误详情(monkeypatch) -> None:
-    def failed_text(*args, **kwargs):
-        raise ValueError("TEXT测试错误")
+def testfusion精准失败时降级legacy并记录兼容错误字段(monkeypatch) -> None:
+    class FailedPreciseRecognizer:
+        最近错误 = "精准三色测试错误"
+
+        def reset(self):
+            pass
+
+        def 识别(self, image):
+            return None
 
     def good_legacy(image, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
         return 角度模式模块.AnalysisResult(
@@ -141,7 +169,7 @@ def testfusion结果记录单路错误详情(monkeypatch) -> None:
             np.zeros(image.shape[:2], dtype=np.uint8), region[:2], "LEGACY"
         )
 
-    monkeypatch.setattr(角度模式模块, "_analyze_image_text_raw", failed_text)
+    monkeypatch.setattr(角度模式模块, "_fusion_precise_recognizer", FailedPreciseRecognizer(), raising=False)
     monkeypatch.setattr(角度模式模块, "_analyze_image_legacy", good_legacy)
     角度模式模块.reset_fusion_selector()
 
@@ -152,5 +180,164 @@ def testfusion结果记录单路错误详情(monkeypatch) -> None:
 
     assert result.observation_source == "legacy"
     assert result.fusion_difference is None
-    assert "TEXT测试错误" in result.text_error
+    assert result.precise_color is None
+    assert result.precise_quality is None
+    assert "精准三色测试错误" in result.precise_error
+    assert result.text_error == result.precise_error
     assert result.legacy_error is None
+    assert "精准三色 无效" in result.fusion_reason
+    assert "TEXT" not in result.fusion_reason
+
+
+def testfusion精准成功legacy失败时复用精准详情(monkeypatch) -> None:
+    debug = np.full((5, 7, 3), 23, dtype=np.uint8)
+    mask = np.full((5, 7), 255, dtype=np.uint8)
+
+    class GoodPreciseRecognizer:
+        最近错误 = None
+
+        def reset(self):
+            pass
+
+        def 识别(self, image):
+            return SimpleNamespace(
+                angle=72.5,
+                color="蓝色",
+                confidence=0.91,
+                details={
+                    "origin": (4.0, 5.0),
+                    "target": (6.0, 7.0),
+                    "debug": debug,
+                    "mask": mask,
+                    "offset": (3, 4),
+                    "color_hex": "95BBE8",
+                },
+            )
+
+    def failed_legacy(*args, **kwargs):
+        raise ValueError("Legacy测试错误")
+
+    monkeypatch.setattr(角度模式模块, "_fusion_precise_recognizer", GoodPreciseRecognizer(), raising=False)
+    monkeypatch.setattr(角度模式模块, "_analyze_image_legacy", failed_legacy)
+    角度模式模块.reset_fusion_selector()
+
+    result = 角度模式模块._analyze_image_fusion(
+        np.zeros((240, 240, 3), dtype=np.uint8),
+        [("FFFFFF", (255, 255, 255))], 45, 0, False, (10, 20, 203, 213), False,
+    )
+
+    assert result.angle == 72.5
+    assert result.origin == (4.0, 5.0)
+    assert result.target == (6.0, 7.0)
+    assert result.debug is debug
+    assert result.mask is mask
+    assert result.offset == (13, 24)
+    assert result.color_hex == "95BBE8"
+    assert result.observation_source == "precise"
+    assert result.precise_color == "蓝色"
+    assert result.precise_quality == 0.91
+    assert result.precise_error is None
+    assert result.text_error is None
+    assert "Legacy测试错误" in result.legacy_error
+    assert result.fusion_difference is None
+    assert result.fusion_reason == "Legacy 无效，采用 精准三色"
+
+
+def testfusion两路均失败时错误明确使用精准三色名称(monkeypatch) -> None:
+    class FailedPreciseRecognizer:
+        最近错误 = "没有精准候选"
+
+        def reset(self):
+            pass
+
+        def 识别(self, image):
+            return None
+
+    def failed_legacy(*args, **kwargs):
+        raise ValueError("没有Legacy候选")
+
+    monkeypatch.setattr(角度模式模块, "_fusion_precise_recognizer", FailedPreciseRecognizer(), raising=False)
+    monkeypatch.setattr(角度模式模块, "_analyze_image_legacy", failed_legacy)
+    角度模式模块.reset_fusion_selector()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        角度模式模块._analyze_image_fusion(
+            np.zeros((193, 193, 3), dtype=np.uint8),
+            [("FFFFFF", (255, 255, 255))], 45, 0, False, None, False,
+        )
+
+    message = str(exc_info.value)
+    assert "精准三色=没有精准候选" in message
+    assert "Legacy=没有Legacy候选" in message
+    assert "TEXT" not in message
+
+
+def testfusion精准识别器惰性构造且复用实例(monkeypatch) -> None:
+    getter = getattr(角度模式模块, "_get_fusion_precise_recognizer", None)
+    assert callable(getter)
+
+    import 三色精准角度
+
+    created = []
+
+    class FakePreciseRecognizer:
+        pass
+
+    def fake_factory():
+        instance = FakePreciseRecognizer()
+        created.append(instance)
+        return instance
+
+    monkeypatch.setattr(三色精准角度, "三色精准角度识别器", fake_factory)
+    monkeypatch.setattr(角度模式模块, "_fusion_precise_recognizer", None)
+
+    first = getter()
+    second = getter()
+
+    assert first is second
+    assert created == [first]
+
+
+def testlegacy和text模式分析不创建三色精准识别器(monkeypatch) -> None:
+    def forbidden_getter():
+        raise AssertionError("Legacy/TEXT模式不得创建三色精准识别器")
+
+    legacy_result = object()
+    text_result = object()
+    monkeypatch.setattr(角度模式模块, "_get_fusion_precise_recognizer", forbidden_getter, raising=False)
+    monkeypatch.setattr(角度模式模块, "_analyze_image_legacy", lambda *args, **kwargs: legacy_result)
+    monkeypatch.setattr(角度模式模块, "_analyze_image_text", lambda *args, **kwargs: text_result)
+    args = (np.zeros((10, 10, 3), dtype=np.uint8), [], 45, 0, False, None, False)
+
+    角度模式模块.set_angle_mode("legacy")
+    assert 角度模式模块.analyze_image(*args) is legacy_result
+    角度模式模块.set_angle_mode("text")
+    assert 角度模式模块.analyze_image(*args) is text_result
+    角度模式模块.set_angle_mode("legacy")
+
+
+def test进入fusion和重置只重置已存在精准实例且不触发加载(monkeypatch) -> None:
+    def forbidden_getter():
+        raise AssertionError("进入Fusion或重置不得惰性加载三色精准识别器")
+
+    monkeypatch.setattr(角度模式模块, "_fusion_precise_recognizer", None, raising=False)
+    monkeypatch.setattr(角度模式模块, "_get_fusion_precise_recognizer", forbidden_getter, raising=False)
+
+    角度模式模块.reset_fusion_selector()
+    assert 角度模式模块.set_angle_mode("fusion") == "fusion"
+
+    class ExistingPreciseRecognizer:
+        def __init__(self):
+            self.reset_count = 0
+
+        def reset(self):
+            self.reset_count += 1
+
+    existing = ExistingPreciseRecognizer()
+    monkeypatch.setattr(角度模式模块, "_fusion_precise_recognizer", existing)
+
+    角度模式模块.reset_fusion_selector()
+    assert existing.reset_count == 1
+    assert 角度模式模块.set_angle_mode("fusion") == "fusion"
+    assert existing.reset_count == 2
+    角度模式模块.set_angle_mode("legacy")
