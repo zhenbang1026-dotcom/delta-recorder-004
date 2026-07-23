@@ -259,6 +259,12 @@ class 自动录制坐标应用:
         )
         r2.pack(anchor="w")
         self._angle_radios.append(r2)
+        r3 = ttk.Radiobutton(
+            mode_frame, text="Fusion 融合（TEXT 主观测，Legacy 异常降级）", value="fusion",
+            variable=self.angle_mode_var, command=self._on_angle_mode_change,
+        )
+        r3.pack(anchor="w")
+        self._angle_radios.append(r3)
         ttk.Label(mode_frame, textvariable=self.angle_mode_hint, foreground="#555555").pack(
             anchor="w", pady=(4, 0)
         )

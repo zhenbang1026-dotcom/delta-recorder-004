@@ -12,6 +12,8 @@ import os
 import sys
 import importlib.util
 import unicodedata
+from bisect import bisect_right
+from collections import defaultdict
 from pathlib import Path
 
 import cv2
@@ -19,6 +21,71 @@ import numpy as np
 
 # 与 text 校准一致：left, top, right, bottom
 DEFAULT_RADAR_LTRB = (34, 78, 227, 271)
+
+
+def _最短角差(起点: float, 终点: float) -> float:
+    return (float(终点) - float(起点) + 180.0) % 360.0 - 180.0
+
+
+def _圆形均值(角度列表) -> float:
+    x = sum(math.cos(math.radians(float(v))) for v in 角度列表)
+    y = sum(math.sin(math.radians(float(v))) for v in 角度列表)
+    if abs(x) < 1e-12 and abs(y) < 1e-12:
+        return float(角度列表[0]) % 360.0
+    return math.degrees(math.atan2(y, x)) % 360.0
+
+
+def _构建圆形残差节点(映射数据):
+    分组 = defaultdict(list)
+    for 原始角, 游戏角 in 映射数据 or ():
+        原始角 = float(原始角) % 360.0
+        分组[原始角].append(_最短角差(原始角, float(游戏角)))
+    return sorted(
+        (原始角, _圆形均值(残差列表))
+        for 原始角, 残差列表 in 分组.items()
+    )
+
+
+def _圆形残差插值详情(原始角度: float, 映射数据):
+    """返回 ``(游戏角度, 置信度)``；没有 MAP 时返回 ``None``。"""
+    原始角度 = float(原始角度) % 360.0
+    节点 = _构建圆形残差节点(映射数据)
+    if not 节点:
+        return None
+    if len(节点) == 1:
+        return (原始角度 + 节点[0][1]) % 360.0, 0.25
+
+    原始角列表 = [节点原始角 for 节点原始角, _ in 节点]
+    右索引 = bisect_right(原始角列表, 原始角度)
+    左索引 = (右索引 - 1) % len(节点)
+    右索引 %= len(节点)
+    左原始角, 左残差 = 节点[左索引]
+    右原始角, 右残差 = 节点[右索引]
+    if 左索引 >= 右索引:
+        if 左原始角 > 原始角度:
+            左原始角 -= 360.0
+        else:
+            右原始角 += 360.0
+    区间 = 右原始角 - 左原始角
+    比例 = (原始角度 - 左原始角) / 区间
+    插值残差 = (左残差 + 比例 * _最短角差(左残差, 右残差)) % 360.0
+    if 区间 <= 2.0:
+        置信度 = 1.0
+    elif 区间 <= 3.0:
+        置信度 = 0.9
+    elif 区间 <= 5.0:
+        置信度 = 0.8
+    elif 区间 <= 10.0:
+        置信度 = 0.65
+    else:
+        置信度 = 0.5
+    return (原始角度 + 插值残差) % 360.0, 置信度
+
+
+def 圆形残差插值(原始角度: float, 映射数据):
+    """把 MAP 的圆形残差分段插值为游戏角度。"""
+    详情 = _圆形残差插值详情(原始角度, 映射数据)
+    return None if 详情 is None else float(详情[0])
 
 
 def _load_capture():
@@ -91,10 +158,13 @@ class 角度识别器:
                     data["center_x"] = float(parts[0])
                     data["center_y"] = float(parts[1])
                 elif line.startswith("MAP:"):
-                    parts = line.split(":")[1].split(",")
-                    data.setdefault("map_list", []).append(
-                        (float(parts[0]), int(parts[1]))
-                    )
+                    try:
+                        parts = line.split(":", 1)[1].split(",")
+                        data.setdefault("map_list", []).append(
+                            (float(parts[0]), int(parts[1]))
+                        )
+                    except (IndexError, ValueError):
+                        self._log(f"[警告] 跳过无效 MAP 行: {line}")
             self.角度映射数据缓存 = data
             self._log(
                 f"[校准] crop={data.get('crop')} center="
@@ -180,14 +250,27 @@ class 角度识别器:
         if 原始实测角度 < 0:
             原始实测角度 += 360
 
-        if self.当前地图 == "零号大坝":
+        映射详情 = _圆形残差插值详情(
+            原始实测角度,
+            cache.get("map_list", ()),
+        )
+        if 映射详情 is not None:
+            简单角度, 映射置信度 = 映射详情
+            标定来源 = "map"
+        elif self.当前地图 == "零号大坝":
             简单角度 = (原始实测角度 + 90) % 360
+            映射置信度 = 0.25
+            标定来源 = "fixed_offset_90"
         else:
             简单角度 = 原始实测角度
+            映射置信度 = 0.25
+            标定来源 = "raw"
 
         self.最近详情 = {
             "angle": float(简单角度),
             "raw": float(原始实测角度),
+            "calibration_source": 标定来源,
+            "confidence": float(映射置信度),
             "origin": (float(精准中心_x), float(精准中心_y)),
             "target": (箭头_x, 箭头_y),
             "disk": (圆心_x, 圆心_y),

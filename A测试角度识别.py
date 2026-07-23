@@ -23,6 +23,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageGrab, ImageTk
 
+from 角度融合 import 角度融合失败, 角度融合选择器, 角度观测
+
 # ===========================================================================
 # 常量配置
 # ===========================================================================
@@ -41,53 +43,39 @@ ANGLE_DEFAULT_MIN_AREA = "0"
 # 角度模式：legacy=旧颜色轮廓 | text=text箭头（可加稳）
 ANGLE_MODE_LEGACY = "legacy"
 ANGLE_MODE_TEXT = "text"
+ANGLE_MODE_FUSION = "fusion"
 ANGLE_MODE_LABELS = {
     ANGLE_MODE_LEGACY: "旧算法（颜色轮廓）",
     ANGLE_MODE_TEXT: "text箭头算法",
+    ANGLE_MODE_FUSION: "融合算法（TEXT主观测+Legacy降级）",
 }
+ANGLE_FUSION_LEGACY_REGION = (85, 83, 112, 110)
 _angle_mode = ANGLE_MODE_LEGACY
 _angle_mode_lock = threading.Lock()
 _text_recognizer = None
 _text_stabilizer = None
+_fusion_selector = None
 
 
 class _AngleStabilizer:
-    """text 控制向加稳。
-
-    配合 33.3 px/°：
-    - 小变化：较快 EMA 跟手
-    - 中等跳变（~25–70°）：要连续 2 帧接近才采信，抑制转向中野值
-    - 极大跳变（>90°）：更严，避免 251→127 这类一帧飞到对面
-    """
+    """TEXT 单层自适应滤波：只平滑小抖动，正常转向直接跟随。"""
 
     def __init__(
         self,
         alpha=0.65,
-        max_jump=28.0,
-        hard_jump=90.0,
-        confirm=2,
-        confirm_match=14.0,
+        smooth_threshold=4.0,
     ):
         self.alpha = float(alpha)
-        self.max_jump = float(max_jump)
-        self.hard_jump = float(hard_jump)
-        self.confirm = int(confirm)
-        self.confirm_match = float(confirm_match)
+        self.smooth_threshold = float(smooth_threshold)
         self.last = None
-        self.pending = None
-        self.pending_count = 0
 
     def reset(self):
         self.last = None
-        self.pending = None
-        self.pending_count = 0
 
     def force(self, angle: float) -> float:
         """外部稳采样后强制对齐（转向后中位数）。"""
         angle = float(angle) % 360.0
         self.last = angle
-        self.pending = None
-        self.pending_count = 0
         return angle
 
     @staticmethod
@@ -100,31 +88,11 @@ class _AngleStabilizer:
             self.last = angle
             return angle
         d = self._delta(self.last, angle)
-        ad = abs(d)
-        need = self.confirm
-        if ad > self.hard_jump:
-            need = max(self.confirm, 2)
-        if ad > self.max_jump:
-            if (
-                self.pending is not None
-                and abs(self._delta(self.pending, angle)) <= self.confirm_match
-            ):
-                self.pending_count += 1
-            else:
-                self.pending = angle
-                self.pending_count = 1
-            if self.pending_count >= need:
-                self.last = angle
-                self.pending = None
-                self.pending_count = 0
-                return angle
-            # 未确认：沿用上一帧，避免控制吃野值
-            return float(self.last)
-        blended = (self.last + self.alpha * d) % 360.0
-        self.last = blended
-        self.pending = None
-        self.pending_count = 0
-        return blended
+        if abs(d) <= self.smooth_threshold:
+            self.last = (self.last + self.alpha * d) % 360.0
+        else:
+            self.last = angle
+        return float(self.last)
 
 
 def _get_text_recognizer():
@@ -160,6 +128,21 @@ def force_text_stabilizer_angle(angle: float) -> float:
     return _get_text_stabilizer().force(float(angle))
 
 
+def _get_fusion_selector():
+    global _fusion_selector
+    if _fusion_selector is None:
+        _fusion_selector = 角度融合选择器()
+    return _fusion_selector
+
+
+def reset_fusion_selector() -> None:
+    _get_fusion_selector().reset()
+
+
+def force_fusion_selector_angle(angle: float) -> float:
+    return _get_fusion_selector().force(float(angle))
+
+
 def normalize_angle_mode(mode: str | None) -> str:
     value = (mode or ANGLE_MODE_LEGACY).strip().lower()
     aliases = {
@@ -172,10 +155,14 @@ def normalize_angle_mode(mode: str | None) -> str:
         "new": ANGLE_MODE_TEXT,
         "新": ANGLE_MODE_TEXT,
         "箭头": ANGLE_MODE_TEXT,
+        "fusion": ANGLE_MODE_FUSION,
+        "overall": ANGLE_MODE_FUSION,
+        "融合": ANGLE_MODE_FUSION,
+        "融合算法": ANGLE_MODE_FUSION,
     }
     if value in aliases:
         return aliases[value]
-    if value in (ANGLE_MODE_LEGACY, ANGLE_MODE_TEXT):
+    if value in (ANGLE_MODE_LEGACY, ANGLE_MODE_TEXT, ANGLE_MODE_FUSION):
         return value
     raise ValueError(f"未知角度模式: {mode}")
 
@@ -187,6 +174,8 @@ def set_angle_mode(mode: str) -> str:
         _angle_mode = mode
         if mode == ANGLE_MODE_TEXT:
             _get_text_stabilizer().reset()
+        elif mode == ANGLE_MODE_FUSION:
+            reset_fusion_selector()
     return mode
 
 
@@ -197,7 +186,7 @@ def get_angle_mode() -> str:
 
 def get_angle_bbox_str(mode: str | None = None) -> str:
     mode = normalize_angle_mode(mode or get_angle_mode())
-    return ANGLE_TEXT_BBOX if mode == ANGLE_MODE_TEXT else ANGLE_LEGACY_BBOX
+    return ANGLE_TEXT_BBOX if mode in (ANGLE_MODE_TEXT, ANGLE_MODE_FUSION) else ANGLE_LEGACY_BBOX
 
 
 def get_angle_bbox(mode: str | None = None) -> tuple[int, int, int, int]:
@@ -791,29 +780,116 @@ def _analyze_image_legacy(image_bgr, colors, tolerance, min_area, clean_mask, re
     raise RuntimeError("没有匹配到配置颜色。" + " | ".join(errors))
 
 
-def _analyze_image_text(image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
-    """text 箭头算法 + 轻量加稳。截图方式不变，只换识别。"""
+def _analyze_image_text_raw(image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
+    """返回经过 MAP 校准但尚未做时序滤波的 TEXT 观测。"""
     del colors, tolerance, min_area, clean_mask, hsv_mode
     cropped, offset = crop_region(image_bgr, region)
     recognizer = _get_text_recognizer()
     raw = recognizer.识别角度(图像数据=cropped, 显示=False)
     if raw is None:
         raise RuntimeError("无法识别当前朝向（text箭头算法）")
-    angle = _get_text_stabilizer().update(float(raw))
     detail = recognizer.最近详情 or {}
     origin = detail.get("origin") or (0.0, 0.0)
     target = detail.get("target") or origin
     mask = detail.get("mask")
     debug_src = detail.get("debug")
     if debug_src is not None:
-        debug = draw_angle_debug(debug_src, float(angle), origin, target, [])
+        debug = draw_angle_debug(debug_src, float(raw), origin, target, [])
     else:
-        debug = draw_angle_debug(cropped, float(angle), origin, target, [])
+        debug = draw_angle_debug(cropped, float(raw), origin, target, [])
     if mask is None:
         mask = np.zeros(cropped.shape[:2], dtype=np.uint8)
-    return AnalysisResult(
-        float(angle), origin, target, debug, mask, offset, "9AE77E"
+    result = AnalysisResult(float(raw), origin, target, debug, mask, offset, "9AE77E")
+    result.confidence = float(detail.get("confidence", 0.5))
+    result.calibration_source = str(detail.get("calibration_source", "unknown"))
+    result.observation_source = "text"
+    return result
+
+
+def _analyze_image_text(image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
+    """MAP 校准后的 TEXT 观测，仅做一层自适应小抖动滤波。"""
+    result = _analyze_image_text_raw(
+        image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode
     )
+    result.angle = _get_text_stabilizer().update(float(result.angle))
+    return result
+
+
+def _analyze_image_fusion(image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
+    """同一 TEXT 大图内并行取 TEXT 与 Legacy 观测并选择可信来源。"""
+    cropped, offset = crop_region(image_bgr, region)
+    text_result = None
+    legacy_result = None
+    text_error = None
+    legacy_error = None
+    try:
+        text_result = _analyze_image_text_raw(
+            cropped, colors, tolerance, min_area, clean_mask, None, hsv_mode
+        )
+    except Exception as exc:
+        text_error = exc
+    try:
+        legacy_result = _analyze_image_legacy(
+            cropped,
+            colors,
+            tolerance,
+            min_area,
+            clean_mask,
+            ANGLE_FUSION_LEGACY_REGION,
+            hsv_mode,
+        )
+    except Exception as exc:
+        legacy_error = exc
+
+    text_observation = None
+    if text_result is not None:
+        text_observation = 角度观测(
+            text_result.angle,
+            float(getattr(text_result, "confidence", 0.8)),
+            "text",
+        )
+    legacy_observation = None
+    if legacy_result is not None:
+        legacy_observation = 角度观测(legacy_result.angle, 0.75, "legacy")
+    try:
+        fused = _get_fusion_selector().update(text_observation, legacy_observation)
+    except 角度融合失败 as exc:
+        details = f"TEXT={text_error}; Legacy={legacy_error}"
+        raise RuntimeError(f"无法识别当前朝向（融合算法）：{details}") from exc
+
+    fusion_difference = None
+    if text_result is not None and legacy_result is not None:
+        fusion_difference = abs(
+            (float(legacy_result.angle) - float(text_result.angle) + 180.0)
+            % 360.0
+            - 180.0
+        )
+
+    if fused.source == "text":
+        result = text_result
+    elif fused.source == "legacy":
+        result = legacy_result
+    else:
+        result = AnalysisResult(
+            fused.angle,
+            (0.0, 0.0),
+            (0.0, 0.0),
+            cropped.copy(),
+            np.zeros(cropped.shape[:2], dtype=np.uint8),
+            offset,
+            "HOLD",
+        )
+    if fused.source != "hold":
+        local_x, local_y = getattr(result, "offset", (0, 0))
+        result.offset = (offset[0] + local_x, offset[1] + local_y)
+    result.angle = float(fused.angle)
+    result.observation_source = fused.source
+    result.confidence = float(fused.confidence)
+    result.fusion_reason = fused.reason
+    result.fusion_difference = fusion_difference
+    result.text_error = None if text_error is None else str(text_error)
+    result.legacy_error = None if legacy_error is None else str(legacy_error)
+    return result
 
 
 def analyze_image(image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
@@ -823,8 +899,13 @@ def analyze_image(image_bgr, colors, tolerance, min_area, clean_mask, region, hs
     - text: text 箭头 + 加稳
     截图仍走 grab_bbox_bgr / 截图模块，不在此改截图。
     """
-    if get_angle_mode() == ANGLE_MODE_TEXT:
+    mode = get_angle_mode()
+    if mode == ANGLE_MODE_TEXT:
         return _analyze_image_text(
+            image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode
+        )
+    if mode == ANGLE_MODE_FUSION:
+        return _analyze_image_fusion(
             image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode
         )
     return _analyze_image_legacy(
