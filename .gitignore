@@ -8,5 +8,6 @@ __pycache__/
 logs/
 录制结果/
 location.txt
+用户设置.json
 *.log
 .DS_Store

@@ -15,10 +15,10 @@ def _角差(a: float, b: float) -> float:
 
 def _创建零度箭头图() -> np.ndarray:
     image = np.zeros((100, 100, 3), dtype=np.uint8)
-    hsv_pixel = np.uint8([[[60, 120, 220]]])
-    green = tuple(int(v) for v in cv2.cvtColor(hsv_pixel, cv2.COLOR_HSV2BGR)[0, 0])
-    cv2.circle(image, (50, 50), 7, green, -1)
-    cv2.circle(image, (75, 50), 4, green, -1)
+    hsv_pixel = np.uint8([[[115, 120, 220]]])
+    blue = tuple(int(v) for v in cv2.cvtColor(hsv_pixel, cv2.COLOR_HSV2BGR)[0, 0])
+    cv2.circle(image, (50, 50), 7, blue, -1)
+    cv2.circle(image, (75, 50), 4, blue, -1)
     return image
 
 

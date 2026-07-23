@@ -5,6 +5,25 @@ import threading
 import time
 
 
+默认视角速度倍率 = 1.5
+最小视角速度倍率 = 0.5
+最大视角速度倍率 = 3.0
+基准最大角速度 = 180.0
+基准最大角加速度 = 1080.0
+
+
+def 规范化视角速度倍率(视角速度倍率=默认视角速度倍率) -> float:
+    if isinstance(视角速度倍率, bool):
+        raise ValueError("视角速度倍率必须是数字")
+    try:
+        倍率 = float(视角速度倍率)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("视角速度倍率必须是数字") from exc
+    if not math.isfinite(倍率):
+        raise ValueError("视角速度倍率必须是有限数字")
+    return max(最小视角速度倍率, min(最大视角速度倍率, 倍率))
+
+
 class 连续视角控制器:
     def __init__(
         self,
@@ -13,8 +32,9 @@ class 连续视角控制器:
         tick秒数: float = 0.008,
         每度像素: float = 100.0 / 3.0,
         比例增益: float = 3.0,
-        最大角速度: float = 180.0,
-        最大角加速度: float = 1080.0,
+        视角速度倍率=默认视角速度倍率,
+        最大角速度: float = 基准最大角速度,
+        最大角加速度: float = 基准最大角加速度,
         激活角度: float = 1.5,
         退出角度: float = 0.75,
         看门狗秒数: float = 0.12,
@@ -25,8 +45,9 @@ class 连续视角控制器:
         self.tick秒数 = float(tick秒数)
         self.每度像素 = float(每度像素)
         self.比例增益 = float(比例增益)
-        self.最大角速度 = abs(float(最大角速度))
-        self.最大角加速度 = abs(float(最大角加速度))
+        self.视角速度倍率 = 规范化视角速度倍率(视角速度倍率)
+        self.最大角速度 = abs(float(最大角速度)) * self.视角速度倍率
+        self.最大角加速度 = abs(float(最大角加速度)) * self.视角速度倍率
         self.激活角度 = abs(float(激活角度))
         self.退出角度 = abs(float(退出角度))
         self.看门狗秒数 = max(0.0, float(看门狗秒数))
@@ -73,7 +94,11 @@ class 连续视角控制器:
                     self._正在修正 = False
             elif 幅度 >= self.激活角度:
                 self._正在修正 = True
-            目标 = self.比例增益 * 角度差 if self._正在修正 else 0.0
+            目标 = (
+                self.比例增益 * self.视角速度倍率 * 角度差
+                if self._正在修正
+                else 0.0
+            )
             self._目标角速度 = self._限速(目标)
             self._最后更新时间 = 当前时间
             return self._目标角速度

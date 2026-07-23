@@ -760,7 +760,9 @@ def _analyze_image_text_raw(image_bgr, colors, tolerance, min_area, clean_mask, 
     recognizer = _get_text_recognizer()
     raw = recognizer.识别角度(图像数据=cropped, 显示=False)
     if raw is None:
-        raise RuntimeError("无法识别当前朝向（text箭头算法）")
+        detail = recognizer.最近详情 or {}
+        reason = detail.get("error", "未知原因")
+        raise RuntimeError(f"无法识别当前朝向（text箭头算法）：{reason}")
     detail = recognizer.最近详情 or {}
     origin = detail.get("origin") or (0.0, 0.0)
     target = detail.get("target") or origin
@@ -1030,6 +1032,8 @@ class RealtimeAngleApp:
         self.latest_origin = None
         self.latest_target = None
 
+        set_angle_mode(ANGLE_MODE_LEGACY)
+        self.angle_mode_var = tk.StringVar(value=ANGLE_MODE_LEGACY)
         self.angle_bbox_var = tk.StringVar(value=ANGLE_DEFAULT_BBOX)
         self.interval_var = tk.StringVar(value=str(DEFAULT_INTERVAL))
         self.angle_colors_var = tk.StringVar(value=",".join(ANGLE_DEFAULT_COLORS))
@@ -1063,6 +1067,17 @@ class RealtimeAngleApp:
         controls = tk.LabelFrame(outer, text="参数", padx=10, pady=10)
         controls.grid(row=0, column=0, rowspan=2, sticky="ns", padx=(0, 12))
 
+        mode_frame = tk.LabelFrame(controls, text="角度模式", padx=6, pady=6)
+        mode_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
+        for column, (mode, label) in enumerate(ANGLE_MODE_LABELS.items()):
+            tk.Radiobutton(
+                mode_frame,
+                text=label,
+                variable=self.angle_mode_var,
+                value=mode,
+                command=self._on_angle_mode_changed,
+            ).grid(row=0, column=column, sticky="w", padx=(0, 8))
+
         fields = [
             ("角度截图 bbox", self.angle_bbox_var),
             ("循环间隔 秒", self.interval_var),
@@ -1071,7 +1086,7 @@ class RealtimeAngleApp:
             ("角度最小面积", self.angle_min_area_var),
             ("角度识别区域 可空", self.angle_region_var),
         ]
-        for row, (label, var) in enumerate(fields):
+        for row, (label, var) in enumerate(fields, start=1):
             tk.Label(controls, text=label).grid(row=row, column=0, sticky="w",
                                                 pady=(0 if row == 0 else 7, 0))
             tk.Entry(controls, textvariable=var, width=26).grid(
@@ -1079,12 +1094,12 @@ class RealtimeAngleApp:
                 pady=(0 if row == 0 else 7, 0))
 
         tk.Checkbutton(controls, text="清理角度 mask", variable=self.angle_clean_var).grid(
-            row=len(fields), column=0, columnspan=2, sticky="w", pady=(8, 0))
+            row=len(fields) + 1, column=0, columnspan=2, sticky="w", pady=(8, 0))
         tk.Checkbutton(controls, text="HSV 颜色分割（精度优先）", variable=self.angle_hsv_var).grid(
-            row=len(fields) + 1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            row=len(fields) + 2, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         buttons = tk.Frame(controls)
-        buttons.grid(row=len(fields) + 2, column=0, columnspan=2, pady=(14, 0), sticky="ew")
+        buttons.grid(row=len(fields) + 3, column=0, columnspan=2, pady=(14, 0), sticky="ew")
         self.start_button = tk.Button(buttons, text="开始", width=10, command=self.start)
         self.start_button.pack(side="left", padx=(0, 8))
         self.stop_button = tk.Button(buttons, text="停止", width=10, command=self.stop, state="disabled")
@@ -1112,6 +1127,15 @@ class RealtimeAngleApp:
 
         self.log_box = scrolledtext.ScrolledText(content, height=8)
         self.log_box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+
+    def _on_angle_mode_changed(self) -> None:
+        worker = getattr(self, "worker", None)
+        if worker and worker.is_alive():
+            self.angle_mode_var.set(get_angle_mode())
+            self.angle_bbox_var.set(get_angle_bbox_str())
+            return
+        mode = set_angle_mode(self.angle_mode_var.get())
+        self.angle_bbox_var.set(get_angle_bbox_str(mode))
 
     def parse_settings(self) -> dict:
         """

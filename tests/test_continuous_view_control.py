@@ -2,7 +2,9 @@ import math
 import threading
 import time
 
-from 连续视角控制 import 连续视角控制器
+import pytest
+
+from 连续视角控制 import 规范化视角速度倍率, 连续视角控制器
 
 
 class 假输入模块:
@@ -13,6 +15,46 @@ class 假输入模块:
     def 鼠标相对移动(self, dx, dy):
         self.移动记录.append((int(dx), int(dy)))
         self.收到移动.set()
+
+
+@pytest.mark.parametrize(
+    ("输入值", "期望值"),
+    [(0.1, 0.5), (0.5, 0.5), ("1.5", 1.5), (3, 3.0), (4.0, 3.0)],
+)
+def test_speed_multiplier_normalizes_numeric_values(输入值, 期望值):
+    assert 规范化视角速度倍率(输入值) == 期望值
+
+
+@pytest.mark.parametrize("输入值", [None, "bad", True, False, math.nan, math.inf, -math.inf])
+def test_speed_multiplier_rejects_non_finite_or_non_numeric_values(输入值):
+    with pytest.raises(ValueError, match="视角速度倍率"):
+        规范化视角速度倍率(输入值)
+
+
+def test_speed_multiplier_scales_default_speed_and_acceleration():
+    默认控制器 = 连续视角控制器(假输入模块(), 自动启动=False, 时钟=lambda: 0.0)
+    双倍控制器 = 连续视角控制器(
+        假输入模块(), 视角速度倍率="2.0", 自动启动=False, 时钟=lambda: 0.0
+    )
+
+    assert 默认控制器.最大角速度 == 270.0
+    assert 默认控制器.最大角加速度 == 1620.0
+    assert 双倍控制器.最大角速度 == 360.0
+    assert 双倍控制器.最大角加速度 == 2160.0
+
+
+@pytest.mark.parametrize(
+    ("倍率", "期望目标角速度"),
+    [(0.5, 30.0), (1.5, 90.0), (3.0, 180.0)],
+)
+def test_speed_multiplier_scales_proportional_target_speed(倍率, 期望目标角速度):
+    控制器 = 连续视角控制器(
+        假输入模块(), 视角速度倍率=倍率, 自动启动=False, 时钟=lambda: 0.0
+    )
+
+    控制器.更新角度差(20.0, 当前时间=0.0)
+
+    assert 控制器.目标角速度 == 期望目标角速度
 
 
 def test_deadband_hysteresis_keeps_small_error_inactive():
@@ -44,9 +86,9 @@ def test_speed_and_acceleration_are_limited_per_tick():
 
     控制器.推进一次(0.008, 当前时间=0.008)
 
-    assert 控制器.目标角速度 == 180.0
-    assert math.isclose(控制器.当前角速度, 8.64, abs_tol=1e-9)
-    assert abs(控制器.当前角速度) <= 180.0
+    assert 控制器.目标角速度 == 270.0
+    assert math.isclose(控制器.当前角速度, 12.96, abs_tol=1e-9)
+    assert abs(控制器.当前角速度) <= 270.0
 
 
 def test_direction_reversal_must_pass_through_zero():
@@ -67,7 +109,7 @@ def test_direction_reversal_must_pass_through_zero():
     首个负值 = next(i for i, value in enumerate(速度序列) if value < 0)
     assert any(math.isclose(value, 0.0, abs_tol=1e-9) for value in 速度序列[:首个负值])
     assert all(
-        abs(right - left) <= 1080.0 * 0.008 + 1e-9
+        abs(right - left) <= 1620.0 * 0.008 + 1e-9
         for left, right in zip(速度序列, 速度序列[1:])
     )
 

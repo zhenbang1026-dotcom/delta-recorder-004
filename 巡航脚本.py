@@ -11,7 +11,7 @@ from pathlib import Path
 import threading
 import time
 
-from 连续视角控制 import 连续视角控制器
+from 连续视角控制 import 默认视角速度倍率, 规范化视角速度倍率, 连续视角控制器
 
 
 def _按文件名加载模块(模块名):
@@ -729,10 +729,6 @@ class 实时定位器:
             return 上次角度
         return float(angle)
 
-    def _text融合读角(self, 读数角: float) -> float:
-        """增强模式只使用视觉观察器输出，不用鼠标命令自证角度。"""
-        return float(读数角)
-
     def _确认角度跳变(self, x: int, y: int, angle: float, 复查函数) -> float:
         self._角度复查诊断 = ""
         最近状态 = getattr(self, "最近状态", None)
@@ -929,7 +925,6 @@ class 实时定位器:
             self._识别角度(角度图像),
             lambda: self._识别角度(self._截图区域(self.角度截图区域)),
         )
-        angle = self._text融合读角(angle)
         self.最近状态 = (x, y, angle)
         设置识别诊断状态(self, self._角度复查诊断 or "识别完成")
         return self.最近状态
@@ -1590,8 +1585,10 @@ def 巡航(
     定位器=None,
     日志函数=None,
     停止事件: threading.Event | None = None,
+    视角速度倍率=默认视角速度倍率,
 ) -> None:
     校验到点阈值(到点阈值)
+    视角速度倍率 = 规范化视角速度倍率(视角速度倍率)
     路径点列表 = 读取路径(路径文件, 自动路线点距=当前模式自动路线点距())
     # 按当前角度模式取参（text 已提高大角差阈值）
     if 是否增强角度模式():
@@ -1601,14 +1598,13 @@ def 巡航(
         记录器 = 寻路记录器()
     except Exception:
         记录器 = None
+    执行器参数 = {"视角速度倍率": 视角速度倍率}
+    if 停止事件 is not None:
+        执行器参数["停止事件"] = 停止事件
     控制器 = 巡航控制器(
         路径点列表=路径点列表,
         定位器=定位器 or 实时定位器(),
-        执行器=(
-            Win32执行器()
-            if 停止事件 is None
-            else Win32执行器(停止事件=停止事件)
-        ),
+        执行器=Win32执行器(**执行器参数),
         到点阈值=到点阈值,
         参数=参数,
         终点对正=终点对正,
@@ -1657,11 +1653,15 @@ class Win32执行器:
         输入模块=win32_input,
         停止事件: threading.Event | None = None,
         *,
+        视角速度倍率=默认视角速度倍率,
         连续控制器工厂=连续视角控制器,
     ):
         self.输入模块 = 输入模块
         self.停止事件 = 停止事件
-        self._连续视角控制器 = 连续控制器工厂(输入模块)
+        self.视角速度倍率 = 规范化视角速度倍率(视角速度倍率)
+        self._连续视角控制器 = 连续控制器工厂(
+            输入模块, 视角速度倍率=self.视角速度倍率
+        )
         self._正在前进 = False
         self._本段已疾跑 = False
 

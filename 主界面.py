@@ -16,11 +16,12 @@
 """
 from __future__ import annotations
 
+import json
+import math
 import os
 import queue
 import sys
 import threading
-import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -47,7 +48,9 @@ MAP_PATH = ROOT / "maps" / "DB.png"
 ROUTES_DIR = ROOT / "routes"
 RECORD_DIR = ROOT / "录制结果"
 LOGS_DIR = ROOT / "logs"
+USER_SETTINGS_PATH = ROOT / "用户设置.json"
 PREVIEW_W = 720
+START_DELAY_MS = 3000
 
 
 def _ensure_dirs() -> None:
@@ -106,6 +109,8 @@ class 合并主界面:
         self._cruise_stop = threading.Event()
         self._detect_thread: Optional[threading.Thread] = None
         self._cruise_thread: Optional[threading.Thread] = None
+        self._detect_start_after = None
+        self._cruise_start_after = None
         self._queue: "queue.Queue[Tuple[str, object]]" = queue.Queue()
         self._log_path = None
         self._log_fn = None
@@ -119,10 +124,13 @@ class 合并主界面:
         self.route_var = tk.StringVar(value="")
         self.arrival_var = tk.IntVar(value=3)
         self.precise_var = tk.BooleanVar(value=False)
+        self.speed_var = tk.DoubleVar(value=1.5)
+        self.speed_label_var = tk.StringVar(value="1.5x")
         self.record_count_var = tk.StringVar(value="录制点数: 0")
 
         self._init_backends()
         self._build_ui()
+        self._load_settings()
         self._refresh_route_list()
         self._apply_angle_mode()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -264,10 +272,23 @@ class 合并主界面:
             side="left", padx=(4, 12)
         )
         ttk.Checkbutton(r2, text="精准模式", variable=self.precise_var).pack(side="left")
+        ttk.Label(r2, text="速度倍率:").pack(side="left", padx=(16, 0))
+        tk.Scale(
+            r2,
+            from_=0.5,
+            to=3.0,
+            resolution=0.1,
+            orient="horizontal",
+            variable=self.speed_var,
+            command=self._update_speed_label,
+            showvalue=False,
+            length=130,
+        ).pack(side="left", padx=(4, 2))
+        ttk.Label(r2, textvariable=self.speed_label_var, width=5).pack(side="left")
         self.btn_cruise_start = ttk.Button(
             r2, text="开始回放", command=self.start_cruise, width=12
         )
-        self.btn_cruise_start.pack(side="left", padx=(16, 6))
+        self.btn_cruise_start.pack(side="left", padx=(10, 6))
         self.btn_cruise_stop = ttk.Button(
             r2, text="停止回放 (Esc)", command=self.stop_cruise, width=14, state="disabled"
         )
@@ -300,6 +321,83 @@ class 合并主界面:
         self.points_text.pack(fill="both", expand=True, pady=(4, 0))
 
         self._draw_preview(None)
+
+    # ------------------------------------------------------------------ settings
+    def _update_speed_label(self, value: Optional[str] = None) -> None:
+        try:
+            speed = float(self.speed_var.get() if value is None else value)
+        except (TypeError, ValueError, tk.TclError):
+            speed = 1.5
+        self.speed_label_var.set(f"{speed:.1f}x")
+
+    def _load_settings(self) -> None:
+        try:
+            data = json.loads(USER_SETTINGS_PATH.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return
+        if not isinstance(data, dict):
+            return
+
+        mode = data.get("角度模式")
+        if mode in ("legacy", "text"):
+            self.angle_mode_var.set(mode)
+
+        speed = data.get("视角速度倍率")
+        if isinstance(speed, (int, float)) and not isinstance(speed, bool):
+            speed = float(speed)
+            if math.isfinite(speed) and 0.5 <= speed <= 3.0:
+                self.speed_var.set(round(speed, 1))
+
+        arrival = data.get("到点阈值")
+        if isinstance(arrival, int) and not isinstance(arrival, bool) and 1 <= arrival <= 30:
+            self.arrival_var.set(arrival)
+
+        precise = data.get("精准模式")
+        if isinstance(precise, bool):
+            self.precise_var.set(precise)
+
+        route = data.get("所选路线")
+        if isinstance(route, str):
+            self.route_var.set(route)
+        self._update_speed_label()
+
+    def _save_settings(self) -> None:
+        try:
+            speed = float(self.speed_var.get())
+            if not math.isfinite(speed) or not 0.5 <= speed <= 3.0:
+                speed = 1.5
+        except (TypeError, ValueError, tk.TclError):
+            speed = 1.5
+        try:
+            arrival = int(self.arrival_var.get())
+            if not 1 <= arrival <= 30:
+                arrival = 3
+        except (TypeError, ValueError, tk.TclError):
+            arrival = 3
+        mode = self.angle_mode_var.get()
+        if mode not in ("legacy", "text"):
+            mode = "legacy"
+        data = {
+            "角度模式": mode,
+            "视角速度倍率": round(speed, 1),
+            "到点阈值": arrival,
+            "精准模式": bool(self.precise_var.get()),
+            "所选路线": str(self.route_var.get()),
+        }
+        try:
+            USER_SETTINGS_PATH.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    def _restore_window(self) -> None:
+        try:
+            self.root.deiconify()
+            self.root.lift()
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------------ angle
     def _apply_angle_mode(self) -> None:
@@ -340,6 +438,15 @@ class 合并主界面:
         self.btn_detect_stop.config(state="normal")
         self.btn_rec_start.config(state="normal")
         self._set_angle_radios(False)
+        self.status_var.set(f"窗口已最小化，3 秒后开始识别… | {识别模块.当前角度模式标签()}")
+        self._detect_thread = None
+        self.root.iconify()
+        self._detect_start_after = self.root.after(START_DELAY_MS, self._start_detect_thread)
+
+    def _start_detect_thread(self) -> None:
+        self._detect_start_after = None
+        if not self.detecting or self._detect_stop.is_set():
+            return
         self.status_var.set(f"识别中… | {识别模块.当前角度模式标签()}")
         self._detect_thread = threading.Thread(target=self._detect_loop, daemon=True)
         self._detect_thread.start()
@@ -350,6 +457,22 @@ class 合并主界面:
         self.detecting = False
         self._detect_stop.set()
         录制模块.写日志(self._log_fn, "event=detect_stop")
+        self._restore_window()
+        if self._detect_thread is None:
+            after_id = getattr(self, "_detect_start_after", None)
+            if after_id is not None:
+                try:
+                    self.root.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+            self._detect_start_after = None
+            self.btn_detect_start.config(state="normal")
+            self.btn_detect_stop.config(state="disabled")
+            self.btn_rec_start.config(state="disabled")
+            self.btn_rec_stop.config(state="disabled")
+            if not self.cruising:
+                self._set_angle_radios(True)
+            self.status_var.set("已停止识别")
 
     def _detect_loop(self) -> None:
         assert self.识别器 is not None
@@ -465,27 +588,24 @@ class 合并主界面:
         self.btn_cruise_stop.config(state="normal")
         self.btn_detect_start.config(state="disabled")
         self._set_angle_radios(False)
-        delay = getattr(巡航模块, "默认启动延迟秒数", 2)
+        delay = START_DELAY_MS // 1000
         label = 识别模块.当前角度模式标签()
         self.status_var.set(
             f"{巡航模块.构建开始状态文本(delay)} | 角度={label} | 到点={到点}"
         )
         定位器 = self.巡航定位器
+        精准 = bool(self.precise_var.get())
+        视角速度倍率 = float(self.speed_var.get())
 
         def worker() -> None:
             try:
                 # 直接调 巡航，可传入到点阈值 / 精准模式
-                if delay > 0:
-                    end = time.monotonic() + delay
-                    while time.monotonic() < end:
-                        if 巡航模块.处理esc紧急停止(self._cruise_stop):
-                            raise 巡航模块.紧急停止异常("检测到 ESC，已停止巡航")
-                        time.sleep(min(0.05, max(0.0, end - time.monotonic())))
                 _, log_fn = 巡航模块.创建日志记录器("巡航工具")
                 巡航模块.巡航(
                     route,
                     到点阈值=到点,
-                    精准模式=bool(self.precise_var.get()),
+                    精准模式=精准,
+                    视角速度倍率=视角速度倍率,
                     定位器=定位器,
                     日志函数=log_fn,
                     停止事件=self._cruise_stop,
@@ -498,15 +618,39 @@ class 合并主界面:
             finally:
                 self._queue.put(("cruise_stopped", None))
 
-        self._cruise_thread = threading.Thread(target=worker, daemon=True)
-        self._cruise_thread.start()
+        def start_worker() -> None:
+            self._cruise_start_after = None
+            if not self.cruising or self._cruise_stop.is_set():
+                return
+            self._cruise_thread = threading.Thread(target=worker, daemon=True)
+            self._cruise_thread.start()
+
+        self._cruise_thread = None
+        self.root.iconify()
+        self._cruise_start_after = self.root.after(START_DELAY_MS, start_worker)
         self.root.after(200, self._poll_cruise_preview)
 
     def stop_cruise(self) -> None:
         if not self.cruising:
             return
         self._cruise_stop.set()
-        self.status_var.set("正在停止巡航…")
+        self._restore_window()
+        if self._cruise_thread is None:
+            after_id = getattr(self, "_cruise_start_after", None)
+            if after_id is not None:
+                try:
+                    self.root.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+            self._cruise_start_after = None
+            self.cruising = False
+            self.btn_cruise_start.config(state="normal")
+            self.btn_cruise_stop.config(state="disabled")
+            self.btn_detect_start.config(state="normal")
+            self._set_angle_radios(True)
+            self.status_var.set("已停止巡航")
+        else:
+            self.status_var.set("正在停止巡航…")
 
     def _poll_cruise_preview(self) -> None:
         if not self.cruising:
@@ -534,8 +678,7 @@ class 合并主界面:
         elif labels and not self.route_var.get():
             self.route_var.set(labels[0])
         elif self.route_var.get() and self.route_var.get() not in labels:
-            if labels:
-                self.route_var.set(labels[0])
+            self.route_var.set(labels[0] if labels else "")
 
     def _browse_route(self) -> None:
         path = filedialog.askopenfilename(
@@ -560,6 +703,7 @@ class 合并主界面:
                 self.status_var.set(f"识别失败: {payload}")
             elif kind == "detect_stopped":
                 self.detecting = False
+                self._detect_thread = None
                 self.btn_detect_start.config(state="normal")
                 self.btn_detect_stop.config(state="disabled")
                 self.btn_rec_start.config(state="disabled")
@@ -570,6 +714,7 @@ class 合并主界面:
                     self.status_var.set("已停止识别")
                 else:
                     self.status_var.set(f"已停止识别 | 上次保存: {self._last_saved}")
+                self._restore_window()
             elif kind == "cruise_done":
                 self.status_var.set(str(payload))
             elif kind == "cruise_error":
@@ -577,10 +722,12 @@ class 合并主界面:
                 self.status_var.set(f"寻路失败: {payload}")
             elif kind == "cruise_stopped":
                 self.cruising = False
+                self._cruise_thread = None
                 self.btn_cruise_start.config(state="normal")
                 self.btn_cruise_stop.config(state="disabled")
                 self.btn_detect_start.config(state="normal")
                 self._set_angle_radios(True)
+                self._restore_window()
         self.root.after(80, self._drain_queue)
 
     def _on_state(self, state: 识别模块.识别状态) -> None:
@@ -647,7 +794,7 @@ class 合并主界面:
         if self.cruising:
             try:
                 if 巡航模块.处理esc紧急停止(self._cruise_stop):
-                    pass
+                    self.stop_cruise()
             except Exception:
                 pass
         self.root.after(50, self._esc_poll)
@@ -662,6 +809,7 @@ class 合并主界面:
                 self.stop_cruise()
         except Exception:
             pass
+        self._save_settings()
         self.root.destroy()
 
     def run(self) -> None:

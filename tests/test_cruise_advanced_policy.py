@@ -64,7 +64,7 @@ def test_legacy_action_and_executor_use_continuous_controller(monkeypatch):
     连续 = 假连续控制器()
     执行器 = cruise.Win32执行器(
         输入模块=输入,
-        连续控制器工厂=lambda _input: 连续,
+        连续控制器工厂=lambda _input, **_kwargs: 连续,
     )
     执行器.执行(动作)
     执行器.停止()
@@ -74,12 +74,70 @@ def test_legacy_action_and_executor_use_continuous_controller(monkeypatch):
     assert 连续.已停止
 
 
+@pytest.mark.parametrize(
+    ("mode", "输入倍率", "期望倍率"),
+    [("legacy", "2.0", 2.0), ("text", 0.1, 0.5)],
+)
+def test_executor_passes_normalized_speed_multiplier_to_continuous_controller(
+    monkeypatch, mode, 输入倍率, 期望倍率
+):
+    设置模式(monkeypatch, mode)
+    收到参数 = {}
+
+    def 创建连续控制器(_input, **kwargs):
+        收到参数.update(kwargs)
+        return 假连续控制器()
+
+    执行器 = cruise.Win32执行器(
+        输入模块=假输入模块(),
+        视角速度倍率=输入倍率,
+        连续控制器工厂=创建连续控制器,
+    )
+    执行器.停止()
+
+    assert 收到参数 == {"视角速度倍率": 期望倍率}
+
+
+@pytest.mark.parametrize(
+    ("mode", "输入倍率", "期望倍率"),
+    [("legacy", 2.25, 2.25), ("text", "4.0", 3.0)],
+)
+def test_cruise_passes_speed_multiplier_to_win32_executor(
+    monkeypatch, mode, 输入倍率, 期望倍率
+):
+    设置模式(monkeypatch, mode)
+    收到参数 = {}
+    已运行 = []
+
+    def 创建执行器(**kwargs):
+        收到参数.update(kwargs)
+        return object()
+
+    class 假巡航控制器:
+        def __init__(self, **_kwargs):
+            pass
+
+        def 运行(self):
+            已运行.append(True)
+
+    monkeypatch.setattr(cruise, "读取路径", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(cruise, "重置每度像素校准", lambda *_args: None)
+    monkeypatch.setattr(cruise, "寻路记录器", lambda: None)
+    monkeypatch.setattr(cruise, "Win32执行器", 创建执行器)
+    monkeypatch.setattr(cruise, "巡航控制器", 假巡航控制器)
+
+    cruise.巡航("route.txt", 定位器=object(), 视角速度倍率=输入倍率)
+
+    assert 收到参数 == {"视角速度倍率": 期望倍率}
+    assert 已运行 == [True]
+
+
 def test_advanced_executor_uses_continuous_controller_without_legacy_smooth_move():
     输入 = 假输入模块()
     连续 = 假连续控制器()
     执行器 = cruise.Win32执行器(
         输入模块=输入,
-        连续控制器工厂=lambda _input: 连续,
+        连续控制器工厂=lambda _input, **_kwargs: 连续,
     )
 
     执行器.执行(cruise.动作指令("转向", 鼠标像素=400))
@@ -95,7 +153,7 @@ def test_advanced_waypoint_switch_clears_previous_turn_target():
     连续 = 假连续控制器()
     执行器 = cruise.Win32执行器(
         输入模块=输入,
-        连续控制器工厂=lambda _input: 连续,
+        连续控制器工厂=lambda _input, **_kwargs: 连续,
     )
 
     执行器.执行(cruise.动作指令("转向", 鼠标像素=400))
@@ -112,7 +170,7 @@ def test_near_point_micro_adjustment_reaches_continuous_controller(monkeypatch):
     连续 = cruise.连续视角控制器(输入, 自动启动=False, 时钟=lambda: 0.0)
     执行器 = cruise.Win32执行器(
         输入模块=输入,
-        连续控制器工厂=lambda _input: 连续,
+        连续控制器工厂=lambda _input, **_kwargs: 连续,
     )
     控制器 = cruise.巡航控制器(
         路径点列表=[cruise.路径点(0, 0, 0.0, True)],
@@ -207,13 +265,8 @@ def test_continuous_turn_confirmation_is_non_blocking_and_does_not_read_again(mo
     assert 控制器._待处理状态 is None
 
 
-def test_text_read_angle_no_longer_self_certifies_mouse_command(monkeypatch):
-    设置模式(monkeypatch, "text")
-    定位器 = object.__new__(cruise.实时定位器)
-    定位器._text命令角 = 30.0
-
-    assert 定位器._text融合读角(0.0) == 0.0
-    assert 定位器._text命令角 == 30.0
+def test_text_mode_no_longer_exposes_removed_fusion_helper():
+    assert not hasattr(cruise.实时定位器, "_text融合读角")
 
 
 def test_mode_log_fields_include_continuous_output_without_fusion_diagnostics(monkeypatch):
