@@ -25,7 +25,20 @@ def _get_function_source(source_path: Path, function_name: str) -> str:
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
         and item.name == function_name
     )
-    return "\n".join(source.splitlines()[node.lineno - 1 : node.end_lineno]) + "\n"
+    start_lineno = min([node.lineno, *(item.lineno for item in node.decorator_list)])
+    return "\n".join(source.splitlines()[start_lineno - 1 : node.end_lineno]) + "\n"
+
+
+def test函数源码哈希包含装饰器(tmp_path: Path) -> None:
+    source = "@decorator\ndef target():\n    return 1\n"
+    source_path = tmp_path / "decorated.py"
+    source_path.write_text(source, encoding="utf-8")
+
+    function_source = _get_function_source(source_path, "target")
+
+    assert hashlib.sha256(function_source.encode("utf-8")).hexdigest() == hashlib.sha256(
+        source.encode("utf-8")
+    ).hexdigest()
 
 
 def testlegacy函数源码和默认模式roi不变() -> None:
