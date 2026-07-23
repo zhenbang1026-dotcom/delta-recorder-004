@@ -131,3 +131,18 @@ def testtext拒绝偏离校准中心的圆盘(tmp_path: Path) -> None:
 
     assert angle is None
     assert recognizer.最近详情["error"].startswith("圆盘中心偏离校准中心: ")
+
+
+def test默认识别器可识别当前雷达坐标的绿色箭头() -> None:
+    image = np.zeros((193, 193, 3), dtype=np.uint8)
+    hsv_pixel = np.uint8([[[63, 120, 220]]])
+    green = tuple(int(v) for v in cv2.cvtColor(hsv_pixel, cv2.COLOR_HSV2BGR)[0, 0])
+    cv2.circle(image, (97, 91), 5, green, -1)
+    cv2.circle(image, (97, 81), 2, green, -1)
+    recognizer = 角度模块.默认识别器()
+
+    angle = recognizer.识别角度(图像数据=image)
+
+    assert angle is not None
+    assert recognizer.最近详情["arrow_color"] == "绿色"
+    assert recognizer.最近详情["disk_center_error"] < 角度模块.圆盘中心最大偏差
