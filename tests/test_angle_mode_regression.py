@@ -11,23 +11,43 @@ import A测试角度识别 as 角度模式模块
 
 
 LEGACY_SOURCE_SHA256 = "8bdc995bca7e39bc6726391e497593085e725463e46b4a87afd873a35f3808ca"
+TEXT_RAW_SOURCE_SHA256 = "ad23f5fbd896429dc5fe7591601ef9d1e751bc1fa216e0dbeac41629d4c9ddff"
+TEXT_STABLE_SOURCE_SHA256 = "89351d7c2befb1c1111d7ec57b67ad7b6d60e13b450b60bb50c3990eb9992d2b"
+TEXT_DEFAULT_SOURCE_SHA256 = "56e3aac146039cbf3a1cf4069769613b24cdf9188819e13b2ce9b7c2fd49ee03"
 
 
-def testlegacy函数源码和默认模式roi不变() -> None:
-    source = Path(inspect.getsourcefile(角度模式模块)).read_text(encoding="utf-8")
+def _get_function_source(source_path: Path, function_name: str) -> str:
+    source = source_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
     node = next(
         item
         for item in tree.body
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and item.name == "_analyze_image_legacy"
+        and item.name == function_name
     )
-    function_source = "\n".join(source.splitlines()[node.lineno - 1 : node.end_lineno]) + "\n"
+    return "\n".join(source.splitlines()[node.lineno - 1 : node.end_lineno]) + "\n"
+
+
+def testlegacy函数源码和默认模式roi不变() -> None:
+    source_path = Path(inspect.getsourcefile(角度模式模块))
+    function_source = _get_function_source(source_path, "_analyze_image_legacy")
 
     assert hashlib.sha256(function_source.encode("utf-8")).hexdigest() == LEGACY_SOURCE_SHA256
     角度模式模块.set_angle_mode("legacy")
     assert 角度模式模块.get_angle_mode() == "legacy"
     assert 角度模式模块.get_angle_bbox() == (119, 161, 146, 188)
+
+
+def testtext关键函数源码冻结() -> None:
+    source_path = Path(inspect.getsourcefile(角度模式模块))
+
+    raw_source = _get_function_source(source_path, "_analyze_image_text_raw")
+    stable_source = _get_function_source(source_path, "_analyze_image_text")
+    default_source = _get_function_source(source_path.with_name("识别角度.py"), "默认识别器")
+
+    assert hashlib.sha256(raw_source.encode("utf-8")).hexdigest() == TEXT_RAW_SOURCE_SHA256
+    assert hashlib.sha256(stable_source.encode("utf-8")).hexdigest() == TEXT_STABLE_SOURCE_SHA256
+    assert hashlib.sha256(default_source.encode("utf-8")).hexdigest() == TEXT_DEFAULT_SOURCE_SHA256
 
 
 def testfusion别名标签和roi且切回legacy不变() -> None:
