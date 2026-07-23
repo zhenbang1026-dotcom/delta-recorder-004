@@ -354,7 +354,7 @@ class 三色精准角度识别器:
         for 配置 in 配置列表:
             候选 = self._识别单色(配置, 图像)
             if 候选 is not None and (
-                最佳 is None or 候选.confidence > 最佳.confidence + 1e-9
+                最佳 is None or 候选.confidence - 最佳.confidence >= 1e-9
             ):
                 最佳 = 候选
         return 最佳
