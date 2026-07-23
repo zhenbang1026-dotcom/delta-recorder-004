@@ -112,7 +112,6 @@ TEXT_单次最大转向角度 = 38.0
 转向不收敛微调角度 = 12.0
 转向不收敛原地距离 = 4
 近点位转向保护增量 = 2
-近点位最大微调角度 = 15.0
 增强近点位保护距离 = 10
 增强近点位最大微调角度 = 4.0
 自适应转向比例 = 0.65
@@ -141,10 +140,7 @@ def 是否text角度模式() -> bool:
 
 
 def 是否增强角度模式() -> bool:
-    try:
-        return 合并识别模块.当前角度模式() in {"text", "fusion"}
-    except Exception:
-        return False
+    return 是否text角度模式()
 
 
 def 当前模式自动路线点距() -> int:
@@ -426,10 +422,7 @@ def 模式诊断日志字段(定位器=None) -> dict[str, str]:
         模式 = str(合并识别模块.当前角度模式())
     except Exception:
         模式 = "legacy"
-    字段 = {
-        "角度模式": 模式,
-        "Fusion诊断": str(getattr(定位器, "Fusion诊断状态", "--")),
-    }
+    字段 = {"角度模式": 模式}
     实际像素 = getattr(定位器, "连续控制实际像素", None)
     if 实际像素 is not None:
         字段["连续控制实际像素"] = str(实际像素)
@@ -578,7 +571,6 @@ class 实时定位器:
         self.角度诊断origin = None
         self.角度诊断target = None
         self.角度诊断mask像素 = "--"
-        self.Fusion诊断状态 = "--"
         self.当前目标点详情 = "--"
         self.当前目标角度: float | None = None
         self.当前角度差: float | None = None
@@ -595,10 +587,10 @@ class 实时定位器:
         try:
             self.角度截图区域 = 合并识别模块.当前角度区域()
         except Exception:
-            self.角度截图区域 = 角度区域_text if mode in {"text", "fusion"} else 角度区域_旧
+            self.角度截图区域 = 角度区域_text if mode == "text" else 角度区域_旧
         self.最近状态 = None
         # text：锁定 33.3 px/°；legacy：恢复默认可在线标定
-        if mode in {"text", "fusion"}:
+        if mode == "text":
             重置每度像素校准(TEXT_每度像素)
         else:
             重置每度像素校准(每度像素)
@@ -720,17 +712,6 @@ class 实时定位器:
         self.角度诊断颜色 = f"#{str(getattr(result, 'color_hex', '--')).strip().lstrip('#').upper()}"
         self.角度诊断origin = getattr(result, "origin", None)
         self.角度诊断target = getattr(result, "target", None)
-        来源 = getattr(result, "observation_source", None)
-        if 来源:
-            置信度 = float(getattr(result, "confidence", 0.0))
-            双源差 = getattr(result, "fusion_difference", None)
-            双源差文本 = "--" if 双源差 is None else f"{float(双源差):.2f}°"
-            原因 = str(getattr(result, "fusion_reason", "--"))
-            self.Fusion诊断状态 = (
-                f"来源={来源} | 置信度={置信度:.2f} | 双源差={双源差文本} | {原因}"
-            )
-        else:
-            self.Fusion诊断状态 = "--"
         mask = getattr(result, "mask", None)
         if mask is None:
             self.角度诊断mask像素 = "--"
@@ -749,7 +730,7 @@ class 实时定位器:
         return float(angle)
 
     def _text融合读角(self, 读数角: float) -> float:
-        """增强模式只使用视觉/Fusion 观察器输出，不用鼠标命令自证角度。"""
+        """增强模式只使用视觉观察器输出，不用鼠标命令自证角度。"""
         return float(读数角)
 
     def _确认角度跳变(self, x: int, y: int, angle: float, 复查函数) -> float:
@@ -1266,7 +1247,7 @@ class 巡航控制器:
         原角度差: float,
         动作: 动作指令,
     ) -> None:
-        if 是否增强角度模式():
+        if 是否增强角度模式() or getattr(self.执行器, "_连续视角控制器", None) is not None:
             return
         if 动作.类型 not in {"转向", "终点对正"}:
             return
@@ -1340,17 +1321,17 @@ class 巡航控制器:
 
     def _处理近点位转向(self, *, 距离: int, 角度差: float, 动作: 动作指令) -> 动作指令:
         self._近点位保护触发 = False
+        if 动作.类型 == "转向":
+            近点位距离 = 增强近点位保护距离 if 是否增强角度模式() else self.到点阈值 + 近点位转向保护增量
+            self._近点位保护触发 = 距离 <= 近点位距离
+            return 动作
         if 是否增强角度模式() and 距离 <= 增强近点位保护距离:
             if not 动作.鼠标像素 and abs(角度差) <= self.参数.小角度阈值:
                 return 动作
             self._近点位保护触发 = True
             微调角度 = max(-增强近点位最大微调角度, min(增强近点位最大微调角度, 角度差))
             return 动作指令("前进并微调", 鼠标像素=text微调鼠标像素(微调角度, self.参数.精准缩放))
-        if 动作.类型 != "转向" or 距离 > self.到点阈值 + 近点位转向保护增量:
-            return 动作
-        self._近点位保护触发 = True
-        微调角度 = max(-近点位最大微调角度, min(近点位最大微调角度, 角度差))
-        return 动作指令("前进并微调", 鼠标像素=角度差转鼠标像素(微调角度 * self.参数.精准缩放))
+        return 动作
 
     def _处理转向不收敛(
         self,
@@ -1362,6 +1343,13 @@ class 巡航控制器:
         动作: 动作指令,
     ) -> 动作指令:
         if 动作.类型 != "转向":
+            self._连续转向次数 = 0
+            self._上次转向角差 = None
+            self._上次转向路径索引 = None
+            self._上次转向坐标 = None
+            self._转向不收敛触发 = False
+            return 动作
+        if self._近点位保护触发:
             self._连续转向次数 = 0
             self._上次转向角差 = None
             self._上次转向路径索引 = None
@@ -1617,9 +1605,9 @@ def 巡航(
         路径点列表=路径点列表,
         定位器=定位器 or 实时定位器(),
         执行器=(
-            Win32执行器(增强视角=是否增强角度模式())
+            Win32执行器()
             if 停止事件 is None
-            else Win32执行器(停止事件=停止事件, 增强视角=是否增强角度模式())
+            else Win32执行器(停止事件=停止事件)
         ),
         到点阈值=到点阈值,
         参数=参数,
@@ -1669,22 +1657,17 @@ class Win32执行器:
         输入模块=win32_input,
         停止事件: threading.Event | None = None,
         *,
-        增强视角: bool = False,
         连续控制器工厂=连续视角控制器,
     ):
         self.输入模块 = 输入模块
         self.停止事件 = 停止事件
-        self._增强视角 = bool(增强视角)
-        self._连续视角控制器 = 连续控制器工厂(输入模块) if self._增强视角 else None
+        self._连续视角控制器 = 连续控制器工厂(输入模块)
         self._正在前进 = False
         self._本段已疾跑 = False
 
-    def _更新视角(self, 鼠标像素: int | None, *, Legacy强制调用: bool = False) -> None:
-        if self._连续视角控制器 is not None:
-            角度差 = float(鼠标像素 or 0) / TEXT_每度像素
-            self._连续视角控制器.更新角度差(角度差)
-        elif 鼠标像素 or Legacy强制调用:
-            self.输入模块.丝滑相对移动(鼠标像素, 0)
+    def _更新视角(self, 鼠标像素: int | None) -> None:
+        角度差 = float(鼠标像素 or 0) / 当前每度像素()
+        self._连续视角控制器.更新角度差(角度差)
 
     def _停止前进(self) -> None:
         if self._正在前进 or self._本段已疾跑:
@@ -1693,8 +1676,6 @@ class Win32执行器:
         self._本段已疾跑 = False
 
     def 取出连续输出像素(self) -> int | None:
-        if self._连续视角控制器 is None:
-            return None
         取出输出 = getattr(self._连续视角控制器, "取出输出像素", None)
         return int(取出输出()) if callable(取出输出) else None
 
@@ -1723,7 +1704,7 @@ class Win32执行器:
         self._检查紧急停止()
         if 动作.类型 in {"转向", "终点对正", "刷新视角"}:
             self._停止前进()
-            self._更新视角(动作.鼠标像素, Legacy强制调用=True)
+            self._更新视角(动作.鼠标像素)
             return
         if 动作.类型 in {"脱困", "绕行脱困"}:
             self._停止前进()
@@ -1761,8 +1742,7 @@ class Win32执行器:
         raise ValueError(f"不支持的动作: {动作.类型}")
 
     def 停止(self) -> None:
-        if self._连续视角控制器 is not None:
-            self._连续视角控制器.停止()
+        self._连续视角控制器.停止()
         self._停止前进()
 
 
@@ -1878,11 +1858,7 @@ def 启动巡航界面() -> None:
 
     def 同步角度模式说明() -> None:
         mode = 角度模式变量.get()
-        if mode == "fusion":
-            角度模式说明.set(
-                "Fusion：校准箭头主观测 + Legacy 交叉验证/降级 | 连续视角控制"
-            )
-        elif mode == "text":
+        if mode == "text":
             角度模式说明.set(
                 "text 箭头：HSV+连通域+加稳 | 雷达 34,78,227,271 | 截图仍用 GDI/mss"
             )
@@ -1974,23 +1950,17 @@ def 启动巡航界面() -> None:
     模式框.pack(anchor="w", padx=20, pady=(12, 0), fill="x")
     角度单选 = []
     r1 = ttk.Radiobutton(
-        模式框, text="旧算法（颜色轮廓，legacy）", value="legacy",
+        模式框, text="Legacy 丝滑版", value="legacy",
         variable=角度模式变量, command=同步角度模式说明,
     )
     r1.pack(anchor="w")
     角度单选.append(r1)
     r2 = ttk.Radiobutton(
-        模式框, text="text 箭头算法（HSV+连通域+加稳）", value="text",
+        模式框, text="原版 TEXT", value="text",
         variable=角度模式变量, command=同步角度模式说明,
     )
     r2.pack(anchor="w")
     角度单选.append(r2)
-    r3 = ttk.Radiobutton(
-        模式框, text="融合算法（Fusion，双源校验）", value="fusion",
-        variable=角度模式变量, command=同步角度模式说明,
-    )
-    r3.pack(anchor="w")
-    角度单选.append(r3)
     tk.Label(模式框, textvariable=角度模式说明, fg="#555555", anchor="w", justify="left").pack(
         anchor="w", pady=(4, 0)
     )

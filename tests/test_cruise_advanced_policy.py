@@ -44,13 +44,9 @@ def 设置模式(monkeypatch, mode):
     monkeypatch.setattr(cruise.合并识别模块, "当前角度模式", lambda: mode)
 
 
-def test_mode_helpers_keep_text_exact_and_include_fusion_as_advanced(monkeypatch):
+def test_mode_helpers_keep_text_exact(monkeypatch):
     设置模式(monkeypatch, "text")
     assert cruise.是否text角度模式()
-    assert cruise.是否增强角度模式()
-
-    设置模式(monkeypatch, "fusion")
-    assert not cruise.是否text角度模式()
     assert cruise.是否增强角度模式()
 
     设置模式(monkeypatch, "legacy")
@@ -58,23 +54,24 @@ def test_mode_helpers_keep_text_exact_and_include_fusion_as_advanced(monkeypatch
     assert not cruise.是否增强角度模式()
 
 
-def test_legacy_action_and_executor_keep_original_behavior(monkeypatch):
+def test_legacy_action_and_executor_use_continuous_controller(monkeypatch):
     设置模式(monkeypatch, "legacy")
     参数 = cruise.普通模式参数()
     动作 = cruise.选择动作(距离=20, 角度差=20.0, 到点阈值=3, 参数=参数, 自动路线=True)
     assert 动作 == cruise.动作指令("转向", 鼠标像素=433)
 
     输入 = 假输入模块()
-    是否创建连续控制器 = []
+    连续 = 假连续控制器()
     执行器 = cruise.Win32执行器(
         输入模块=输入,
-        增强视角=False,
-        连续控制器工厂=lambda _input: 是否创建连续控制器.append(True),
+        连续控制器工厂=lambda _input: 连续,
     )
-    执行器.执行(cruise.动作指令("转向", 鼠标像素=433))
-    执行器.执行(cruise.动作指令("转向", 鼠标像素=0))
-    assert 输入.丝滑调用 == [(433, 0), (0, 0)]
-    assert 是否创建连续控制器 == []
+    执行器.执行(动作)
+    执行器.停止()
+
+    assert 输入.丝滑调用 == []
+    assert 连续.角度差记录 == [pytest.approx(433 / cruise.当前每度像素())]
+    assert 连续.已停止
 
 
 def test_advanced_executor_uses_continuous_controller_without_legacy_smooth_move():
@@ -82,7 +79,6 @@ def test_advanced_executor_uses_continuous_controller_without_legacy_smooth_move
     连续 = 假连续控制器()
     执行器 = cruise.Win32执行器(
         输入模块=输入,
-        增强视角=True,
         连续控制器工厂=lambda _input: 连续,
     )
 
@@ -99,7 +95,6 @@ def test_advanced_waypoint_switch_clears_previous_turn_target():
     连续 = 假连续控制器()
     执行器 = cruise.Win32执行器(
         输入模块=输入,
-        增强视角=True,
         连续控制器工厂=lambda _input: 连续,
     )
 
@@ -117,7 +112,6 @@ def test_near_point_micro_adjustment_reaches_continuous_controller(monkeypatch):
     连续 = cruise.连续视角控制器(输入, 自动启动=False, 时钟=lambda: 0.0)
     执行器 = cruise.Win32执行器(
         输入模块=输入,
-        增强视角=True,
         连续控制器工厂=lambda _input: 连续,
     )
     控制器 = cruise.巡航控制器(
@@ -128,9 +122,9 @@ def test_near_point_micro_adjustment_reaches_continuous_controller(monkeypatch):
         参数=cruise.普通模式参数(),
     )
     原动作 = cruise.选择动作(
-        距离=8, 角度差=45.0, 到点阈值=3, 参数=控制器.参数, 自动路线=True
+        距离=8, 角度差=20.0, 到点阈值=3, 参数=控制器.参数, 自动路线=True
     )
-    近点动作 = 控制器._处理近点位转向(距离=8, 角度差=45.0, 动作=原动作)
+    近点动作 = 控制器._处理近点位转向(距离=8, 角度差=20.0, 动作=原动作)
 
     执行器.执行(近点动作)
 
@@ -156,12 +150,10 @@ def test_current_mode_route_spacing_preserves_legacy_default(monkeypatch):
     assert cruise.当前模式自动路线点距() == 18
     设置模式(monkeypatch, "text")
     assert cruise.当前模式自动路线点距() == 6
-    设置模式(monkeypatch, "fusion")
-    assert cruise.当前模式自动路线点距() == 6
 
 
-@pytest.mark.parametrize("mode", ["text", "fusion"])
-def test_advanced_near_point_never_stops_for_large_turn(monkeypatch, mode):
+@pytest.mark.parametrize(("mode", "distance"), [("legacy", 4), ("text", 8)])
+def test_near_point_large_angle_keeps_turning_in_place(monkeypatch, mode, distance):
     设置模式(monkeypatch, mode)
     控制器 = cruise.巡航控制器(
         路径点列表=[cruise.路径点(0, 0, 0.0, True)],
@@ -171,7 +163,7 @@ def test_advanced_near_point_never_stops_for_large_turn(monkeypatch, mode):
         参数=cruise.普通模式参数(),
     )
     原动作 = cruise.选择动作(
-        距离=8,
+        距离=distance,
         角度差=45.0,
         到点阈值=3,
         参数=控制器.参数,
@@ -179,20 +171,28 @@ def test_advanced_near_point_never_stops_for_large_turn(monkeypatch, mode):
     )
     assert 原动作.类型 == "转向"
 
-    动作 = 控制器._处理近点位转向(距离=8, 角度差=45.0, 动作=原动作)
+    动作 = 控制器._处理近点位转向(距离=distance, 角度差=45.0, 动作=原动作)
 
-    assert 动作.类型 == "前进并微调"
-    assert abs(动作.鼠标像素) <= 114
+    assert 动作 == 原动作
+    for _ in range(cruise.转向不收敛判定次数):
+        动作 = 控制器._处理转向不收敛(
+            当前索引=0,
+            当前坐标=(0, 0),
+            距离=distance,
+            角度差=45.0,
+            动作=动作,
+        )
+        assert 动作 == 原动作
 
 
-@pytest.mark.parametrize("mode", ["text", "fusion"])
-def test_advanced_turn_confirmation_is_non_blocking_and_does_not_read_again(monkeypatch, mode):
+@pytest.mark.parametrize("mode", ["legacy", "text"])
+def test_continuous_turn_confirmation_is_non_blocking_and_does_not_read_again(monkeypatch, mode):
     设置模式(monkeypatch, mode)
     定位器 = SimpleNamespace(读取状态=lambda: (_ for _ in ()).throw(AssertionError("不应复读")))
     控制器 = cruise.巡航控制器(
         路径点列表=[cruise.路径点(10, 0, 0.0, True)],
         定位器=定位器,
-        执行器=SimpleNamespace(),
+        执行器=SimpleNamespace(_连续视角控制器=object()),
         到点阈值=3,
         参数=cruise.普通模式参数(),
     )
@@ -216,40 +216,15 @@ def test_text_read_angle_no_longer_self_certifies_mouse_command(monkeypatch):
     assert 定位器._text命令角 == 30.0
 
 
-def test_mode_log_fields_include_fusion_diagnostics(monkeypatch):
-    设置模式(monkeypatch, "fusion")
-    字段 = cruise.模式诊断日志字段(SimpleNamespace(Fusion诊断状态="双源一致"))
-    assert 字段 == {"角度模式": "fusion", "Fusion诊断": "双源一致"}
+def test_mode_log_fields_include_continuous_output_without_fusion_diagnostics(monkeypatch):
+    设置模式(monkeypatch, "legacy")
+    字段 = cruise.模式诊断日志字段(SimpleNamespace(连续控制实际像素=-37))
 
-    含控制输出 = cruise.模式诊断日志字段(
-        SimpleNamespace(Fusion诊断状态="双源一致", 连续控制实际像素=-37)
-    )
-    assert 含控制输出["连续控制实际像素"] == "-37"
+    assert 字段 == {"角度模式": "legacy", "连续控制实际像素": "-37"}
 
 
-def test_locator_copies_fusion_result_into_runtime_diagnostics():
-    定位器 = object.__new__(cruise.实时定位器)
-    定位器._cv2 = SimpleNamespace(countNonZero=lambda _mask: 10)
-    结果 = SimpleNamespace(
-        color_hex="9AE77E",
-        origin=(10.0, 10.0),
-        target=(15.0, 10.0),
-        mask=object(),
-        observation_source="legacy",
-        confidence=0.75,
-        fusion_reason="TEXT 无效，降级 Legacy",
-        fusion_difference=28.0,
-    )
-
-    定位器._记录角度诊断(结果)
-
-    assert 定位器.Fusion诊断状态 == (
-        "来源=legacy | 置信度=0.75 | 双源差=28.00° | TEXT 无效，降级 Legacy"
-    )
-
-
-def test_step_log_contains_mode_and_fusion_diagnostics(monkeypatch):
-    设置模式(monkeypatch, "fusion")
+def test_step_log_contains_mode_and_continuous_output(monkeypatch):
+    设置模式(monkeypatch, "legacy")
     日志 = []
 
     class 记录器:
@@ -263,7 +238,6 @@ def test_step_log_contains_mode_and_fusion_diagnostics(monkeypatch):
             pass
 
     class 定位器:
-        Fusion诊断状态 = "主源可信"
         识别诊断状态 = "识别完成"
         控制诊断状态 = "待机"
 
@@ -296,16 +270,19 @@ def test_step_log_contains_mode_and_fusion_diagnostics(monkeypatch):
         控制器.运行(最大步数=1)
 
     step = next(fields for event, fields in 日志 if event == "event=step")
-    assert step["角度模式"] == "fusion"
-    assert step["Fusion诊断"] == "主源可信"
+    assert step["角度模式"] == "legacy"
     assert step["连续控制实际像素"] == "23"
-    assert 寻路记录器.记录列表[-1]["角度模式"] == "fusion"
-    assert 寻路记录器.记录列表[-1]["Fusion诊断"] == "主源可信"
+    assert 寻路记录器.记录列表[-1]["角度模式"] == "legacy"
     assert 寻路记录器.记录列表[-1]["连续控制实际像素"] == "23"
 
 
-def test_standalone_ui_has_three_modes_and_legacy_default():
+def test_standalone_ui_has_only_legacy_and_text_modes_with_legacy_default():
     source = inspect.getsource(cruise.启动巡航界面)
     assert 'tk.StringVar(value="legacy")' in source
-    assert 'value="fusion"' in source
-    assert "Fusion" in source
+    assert 'value="legacy"' in source
+    assert 'value="text"' in source
+    assert 'text="Legacy 丝滑版"' in source
+    assert 'text="原版 TEXT"' in source
+    assert 'value="fusion"' not in source
+    assert "Fusion" not in source
+    assert source.count("ttk.Radiobutton") == 2

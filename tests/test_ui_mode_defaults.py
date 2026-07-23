@@ -49,11 +49,14 @@ def _assigned_stringvar_default(name: str, attribute: str) -> str | None:
     return None
 
 
-def test_both_ui_entries_offer_fusion_as_third_angle_mode() -> None:
+def test_both_ui_entries_offer_only_legacy_and_original_text() -> None:
     for name in ("主界面.py", "自动录制坐标工具.py"):
         options = _radio_options(name)
-        assert set(options) == {"legacy", "text", "fusion"}, (name, options)
-        assert "Fusion" in options["fusion"]
+        assert tuple(options) == ("legacy", "text"), (name, options)
+        assert options == {
+            "legacy": "Legacy 丝滑版",
+            "text": "原版 TEXT",
+        }, (name, options)
 
 
 def test_both_ui_entries_keep_legacy_as_default() -> None:
@@ -70,17 +73,19 @@ def test_backend_initialization_remains_forced_to_legacy() -> None:
     assert '实时坐标角度识别器(角度模式="legacy")' in recorder_source
 
 
-def test_readme_documents_three_modes_and_keeps_legacy_default() -> None:
+def test_readme_documents_two_modes_and_keeps_legacy_default() -> None:
     readme = _source("README.md")
 
-    assert "三模式" in readme
-    assert "legacy / text / fusion" in readme.lower()
+    assert "legacy / text" in readme.lower()
+    assert "Fusion" not in readme
+    assert "Legacy 丝滑版" in readme
+    assert "原版 TEXT" in readme
     assert "默认" in readme and "Legacy" in readme
 
 
-def test_readme_documents_text_calibration_and_fusion_control() -> None:
+def test_readme_keeps_runtime_instructions() -> None:
     readme = _source("README.md")
 
-    assert "MAP" in readme and "校准" in readme
-    assert "Fusion" in readme and "降级" in readme and "Legacy" in readme
-    assert "TEXT/Fusion" in readme and "连续控制" in readme
+    assert "## 运行" in readme
+    assert "python 主界面.py" in readme
+    assert "start.bat" in readme

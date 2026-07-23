@@ -23,8 +23,6 @@ import cv2
 import numpy as np
 from PIL import Image, ImageGrab, ImageTk
 
-from 角度融合 import 角度融合失败, 角度融合选择器, 角度观测
-
 # ===========================================================================
 # 常量配置
 # ===========================================================================
@@ -43,19 +41,14 @@ ANGLE_DEFAULT_MIN_AREA = "0"
 # 角度模式：legacy=旧颜色轮廓 | text=text箭头（可加稳）
 ANGLE_MODE_LEGACY = "legacy"
 ANGLE_MODE_TEXT = "text"
-ANGLE_MODE_FUSION = "fusion"
 ANGLE_MODE_LABELS = {
-    ANGLE_MODE_LEGACY: "旧算法（颜色轮廓）",
-    ANGLE_MODE_TEXT: "text箭头算法",
-    ANGLE_MODE_FUSION: "融合算法（三色精准主观测+Legacy降级）",
+    ANGLE_MODE_LEGACY: "Legacy 丝滑版",
+    ANGLE_MODE_TEXT: "原版 TEXT",
 }
-ANGLE_FUSION_LEGACY_REGION = (85, 83, 112, 110)
 _angle_mode = ANGLE_MODE_LEGACY
 _angle_mode_lock = threading.Lock()
 _text_recognizer = None
 _text_stabilizer = None
-_fusion_selector = None
-_fusion_precise_recognizer = None
 
 
 class _AngleStabilizer:
@@ -129,33 +122,6 @@ def force_text_stabilizer_angle(angle: float) -> float:
     return _get_text_stabilizer().force(float(angle))
 
 
-def _get_fusion_selector():
-    global _fusion_selector
-    if _fusion_selector is None:
-        _fusion_selector = 角度融合选择器()
-    return _fusion_selector
-
-
-def _get_fusion_precise_recognizer():
-    global _fusion_precise_recognizer
-    if _fusion_precise_recognizer is None:
-        from 三色精准角度 import 三色精准角度识别器
-
-        _fusion_precise_recognizer = 三色精准角度识别器()
-    return _fusion_precise_recognizer
-
-
-def reset_fusion_selector() -> None:
-    if _fusion_selector is not None:
-        _fusion_selector.reset()
-    if _fusion_precise_recognizer is not None:
-        _fusion_precise_recognizer.reset()
-
-
-def force_fusion_selector_angle(angle: float) -> float:
-    return _get_fusion_selector().force(float(angle))
-
-
 def normalize_angle_mode(mode: str | None) -> str:
     value = (mode or ANGLE_MODE_LEGACY).strip().lower()
     aliases = {
@@ -168,14 +134,10 @@ def normalize_angle_mode(mode: str | None) -> str:
         "new": ANGLE_MODE_TEXT,
         "新": ANGLE_MODE_TEXT,
         "箭头": ANGLE_MODE_TEXT,
-        "fusion": ANGLE_MODE_FUSION,
-        "overall": ANGLE_MODE_FUSION,
-        "融合": ANGLE_MODE_FUSION,
-        "融合算法": ANGLE_MODE_FUSION,
     }
     if value in aliases:
         return aliases[value]
-    if value in (ANGLE_MODE_LEGACY, ANGLE_MODE_TEXT, ANGLE_MODE_FUSION):
+    if value in (ANGLE_MODE_LEGACY, ANGLE_MODE_TEXT):
         return value
     raise ValueError(f"未知角度模式: {mode}")
 
@@ -187,8 +149,6 @@ def set_angle_mode(mode: str) -> str:
         _angle_mode = mode
         if mode == ANGLE_MODE_TEXT:
             _get_text_stabilizer().reset()
-        elif mode == ANGLE_MODE_FUSION:
-            reset_fusion_selector()
     return mode
 
 
@@ -199,7 +159,7 @@ def get_angle_mode() -> str:
 
 def get_angle_bbox_str(mode: str | None = None) -> str:
     mode = normalize_angle_mode(mode or get_angle_mode())
-    return ANGLE_TEXT_BBOX if mode in (ANGLE_MODE_TEXT, ANGLE_MODE_FUSION) else ANGLE_LEGACY_BBOX
+    return ANGLE_TEXT_BBOX if mode == ANGLE_MODE_TEXT else ANGLE_LEGACY_BBOX
 
 
 def get_angle_bbox(mode: str | None = None) -> tuple[int, int, int, int]:
@@ -820,135 +780,11 @@ def _analyze_image_text_raw(image_bgr, colors, tolerance, min_area, clean_mask, 
 
 
 def _analyze_image_text(image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
-    """MAP 校准后的 TEXT 观测，仅做一层自适应小抖动滤波。"""
+    """原版 TEXT 观测，仅做一层自适应小抖动滤波。"""
     result = _analyze_image_text_raw(
         image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode
     )
     result.angle = _get_text_stabilizer().update(float(result.angle))
-    return result
-
-
-def _analyze_image_fusion(image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode=False):
-    """同一大图内并行取三色精准与 Legacy 观测并选择可信来源。"""
-    cropped, offset = crop_region(image_bgr, region)
-    precise_result = None
-    legacy_result = None
-    precise_color = None
-    precise_quality = None
-    precise_error = None
-    legacy_error = None
-    try:
-        recognizer = _get_fusion_precise_recognizer()
-        precise = recognizer.识别(cropped)
-        if precise is None:
-            precise_error = getattr(recognizer, "最近错误", None) or "未识别到三色精准角度"
-        else:
-            details = precise.details if isinstance(precise.details, dict) else {}
-            origin = details.get("origin") or (0.0, 0.0)
-            target = details.get("target") or origin
-            debug = details.get("debug")
-            if debug is None:
-                debug = cropped.copy()
-            mask = details.get("mask")
-            if mask is None:
-                mask = np.zeros(cropped.shape[:2], dtype=np.uint8)
-            precise_color = str(precise.color)
-            precise_quality = float(precise.confidence)
-            precise_result = AnalysisResult(
-                float(precise.angle),
-                origin,
-                target,
-                debug,
-                mask,
-                details.get("offset") or (0, 0),
-                str(details.get("color_hex") or "PRECISE"),
-            )
-            precise_result.confidence = precise_quality
-    except Exception as exc:
-        precise_error = str(exc)
-    try:
-        legacy_result = _analyze_image_legacy(
-            cropped,
-            colors,
-            tolerance,
-            min_area,
-            clean_mask,
-            ANGLE_FUSION_LEGACY_REGION,
-            hsv_mode,
-        )
-    except Exception as exc:
-        legacy_error = exc
-
-    selector = _get_fusion_selector()
-    precise_observation = None
-    if precise_result is not None:
-        precise_angle = float(precise_result.angle)
-        precise_confidence = float(getattr(precise_result, "confidence", 0.8))
-        if not math.isfinite(precise_angle):
-            precise_error = f"精准三色角度非有限：{precise_angle}"
-        elif not math.isfinite(precise_confidence):
-            precise_error = f"精准三色质量非有限：{precise_confidence}"
-        elif precise_confidence < selector.min_confidence:
-            precise_error = (
-                f"精准三色质量{precise_confidence:g}低于融合门槛"
-                f"{selector.min_confidence:g}"
-            )
-        precise_observation = 角度观测(
-            precise_angle,
-            precise_confidence,
-            "text",
-        )
-    legacy_observation = None
-    if legacy_result is not None:
-        legacy_observation = 角度观测(legacy_result.angle, 0.75, "legacy")
-    try:
-        fused = selector.update(precise_observation, legacy_observation)
-    except 角度融合失败 as exc:
-        details = f"精准三色={precise_error}; Legacy={legacy_error}"
-        raise RuntimeError(f"无法识别当前朝向（融合算法）：{details}") from exc
-
-    fusion_difference = None
-    if precise_result is not None and legacy_result is not None:
-        fusion_difference = abs(
-            (float(legacy_result.angle) - float(precise_result.angle) + 180.0)
-            % 360.0
-            - 180.0
-        )
-
-    if fused.source == "text":
-        result = precise_result
-    elif fused.source == "legacy":
-        result = legacy_result
-    else:
-        result = AnalysisResult(
-            fused.angle,
-            (0.0, 0.0),
-            (0.0, 0.0),
-            cropped.copy(),
-            np.zeros(cropped.shape[:2], dtype=np.uint8),
-            offset,
-            "HOLD",
-        )
-    if fused.source != "hold":
-        local_x, local_y = getattr(result, "offset", (0, 0))
-        result.offset = (offset[0] + local_x, offset[1] + local_y)
-    result.angle = float(fused.angle)
-    result.observation_source = "precise" if fused.source == "text" else fused.source
-    result.confidence = float(fused.confidence)
-    fusion_reason_parts = [fused.reason.replace("TEXT", "精准三色")]
-    if precise_color is not None:
-        fusion_reason_parts.append(f"精准颜色={precise_color}")
-    if precise_quality is not None:
-        fusion_reason_parts.append(f"精准质量={precise_quality:.3f}")
-    if precise_error is not None:
-        fusion_reason_parts.append(f"精准状态={precise_error}")
-    result.fusion_reason = " | ".join(fusion_reason_parts).replace("TEXT", "精准三色")
-    result.fusion_difference = fusion_difference
-    result.precise_color = precise_color
-    result.precise_quality = precise_quality
-    result.precise_error = precise_error
-    result.text_error = precise_error
-    result.legacy_error = None if legacy_error is None else str(legacy_error)
     return result
 
 
@@ -962,10 +798,6 @@ def analyze_image(image_bgr, colors, tolerance, min_area, clean_mask, region, hs
     mode = get_angle_mode()
     if mode == ANGLE_MODE_TEXT:
         return _analyze_image_text(
-            image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode
-        )
-    if mode == ANGLE_MODE_FUSION:
-        return _analyze_image_fusion(
             image_bgr, colors, tolerance, min_area, clean_mask, region, hsv_mode
         )
     return _analyze_image_legacy(

@@ -12,7 +12,7 @@
 2. 录制路径点并保存
 3. 选择路线 / 刷新列表
 4. 开始/停止巡航回放
-5. 角度模式切换（legacy / text / fusion）
+5. 角度模式切换（legacy / text）
 """
 from __future__ import annotations
 
@@ -206,15 +206,11 @@ class 合并主界面:
         row = ttk.Frame(mode)
         row.pack(fill="x")
         ttk.Radiobutton(
-            row, text="旧算法（颜色轮廓）", value="legacy",
+            row, text="Legacy 丝滑版", value="legacy",
             variable=self.angle_mode_var, command=self._apply_angle_mode,
         ).pack(side="left", padx=(0, 16))
         ttk.Radiobutton(
-            row, text="text 箭头（HSV+连通域+加稳）", value="text",
-            variable=self.angle_mode_var, command=self._apply_angle_mode,
-        ).pack(side="left", padx=(0, 16))
-        ttk.Radiobutton(
-            row, text="Fusion 融合（TEXT 主观测，Legacy 异常降级）", value="fusion",
+            row, text="原版 TEXT", value="text",
             variable=self.angle_mode_var, command=self._apply_angle_mode,
         ).pack(side="left")
         ttk.Label(mode, textvariable=self.angle_hint_var, foreground="#555555").pack(

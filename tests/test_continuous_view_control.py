@@ -44,19 +44,19 @@ def test_speed_and_acceleration_are_limited_per_tick():
 
     控制器.推进一次(0.008, 当前时间=0.008)
 
-    assert 控制器.目标角速度 == 120.0
-    assert math.isclose(控制器.当前角速度, 5.76, abs_tol=1e-9)
-    assert abs(控制器.当前角速度) <= 120.0
+    assert 控制器.目标角速度 == 180.0
+    assert math.isclose(控制器.当前角速度, 8.64, abs_tol=1e-9)
+    assert abs(控制器.当前角速度) <= 180.0
 
 
 def test_direction_reversal_must_pass_through_zero():
     控制器 = 连续视角控制器(假输入模块(), 自动启动=False, 时钟=lambda: 0.0)
-    控制器.设置目标角速度(120.0, 当前时间=0.0)
+    控制器.设置目标角速度(180.0, 当前时间=0.0)
     for i in range(10):
         控制器.推进一次(0.008, 当前时间=(i + 1) * 0.008)
     assert 控制器.当前角速度 > 0
 
-    控制器.设置目标角速度(-120.0, 当前时间=0.08)
+    控制器.设置目标角速度(-180.0, 当前时间=0.08)
     速度序列 = []
     for i in range(20):
         控制器.推进一次(0.008, 当前时间=0.088 + i * 0.008)
@@ -67,7 +67,7 @@ def test_direction_reversal_must_pass_through_zero():
     首个负值 = next(i for i, value in enumerate(速度序列) if value < 0)
     assert any(math.isclose(value, 0.0, abs_tol=1e-9) for value in 速度序列[:首个负值])
     assert all(
-        abs(right - left) <= 720.0 * 0.008 + 1e-9
+        abs(right - left) <= 1080.0 * 0.008 + 1e-9
         for left, right in zip(速度序列, 速度序列[1:])
     )
 
@@ -110,7 +110,7 @@ def test_emitted_pixels_can_be_drained_for_runtime_diagnostics():
 
 def test_watchdog_clears_stale_target_and_decelerates():
     控制器 = 连续视角控制器(假输入模块(), 自动启动=False, 时钟=lambda: 0.0)
-    控制器.设置目标角速度(120.0, 当前时间=0.0)
+    控制器.设置目标角速度(180.0, 当前时间=0.0)
     控制器.推进一次(0.008, 当前时间=0.008)
     原速度 = 控制器.当前角速度
 

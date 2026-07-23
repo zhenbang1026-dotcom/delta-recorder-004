@@ -248,23 +248,17 @@ class 自动录制坐标应用:
         mode_frame.pack(fill="x", pady=(0, 8))
         self._angle_radios = []
         r1 = ttk.Radiobutton(
-            mode_frame, text="旧算法（颜色轮廓）", value="legacy",
+            mode_frame, text="Legacy 丝滑版", value="legacy",
             variable=self.angle_mode_var, command=self._on_angle_mode_change,
         )
         r1.pack(anchor="w")
         self._angle_radios.append(r1)
         r2 = ttk.Radiobutton(
-            mode_frame, text="text 箭头算法（HSV+连通域+加稳）", value="text",
+            mode_frame, text="原版 TEXT", value="text",
             variable=self.angle_mode_var, command=self._on_angle_mode_change,
         )
         r2.pack(anchor="w")
         self._angle_radios.append(r2)
-        r3 = ttk.Radiobutton(
-            mode_frame, text="Fusion 融合（TEXT 主观测，Legacy 异常降级）", value="fusion",
-            variable=self.angle_mode_var, command=self._on_angle_mode_change,
-        )
-        r3.pack(anchor="w")
-        self._angle_radios.append(r3)
         ttk.Label(mode_frame, textvariable=self.angle_mode_hint, foreground="#555555").pack(
             anchor="w", pady=(4, 0)
         )
