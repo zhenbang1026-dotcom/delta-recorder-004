@@ -275,6 +275,19 @@ def test未锁定扫描三色并按质量和固定顺序锁定(
     assert 调用 == ["绿色", "蓝色", "黄色"]
     assert 识别器.当前颜色 == "绿色"
 
+    识别器.reset()
+    调用.clear()
+    输出.update(
+        {
+            "绿色": _候选("绿色", 0.5),
+            "蓝色": _候选("蓝色", 0.5000000005),
+            "黄色": _候选("黄色", 0.4),
+        }
+    )
+    assert 识别器.识别(np.zeros((1, 1, 3), dtype=np.uint8)).color == "绿色"
+    assert 调用 == ["绿色", "蓝色", "黄色"]
+    assert 识别器.当前颜色 == "绿色"
+
 
 def test锁定有效时只调用当前色一次并清除pending(
     monkeypatch: pytest.MonkeyPatch,
