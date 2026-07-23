@@ -294,13 +294,21 @@ class 三色精准角度识别器:
                 raise ValueError("识别详情包含非有限数")
             if not 0.0 <= angle < 360.0:
                 raise ValueError("angle不在[0, 360)内")
+            if mask.ndim != 2:
+                raise ValueError("mask必须是二维数组")
+            if mask.dtype != np.uint8:
+                raise ValueError("mask dtype必须是uint8")
+            x1, y1, x2, y2 = 识别器.角度映射数据缓存["crop"]
+            mask_shape = (2 * (y2 - y1), 2 * (x2 - x1))
+            if mask.shape != mask_shape:
+                raise ValueError(f"mask尺寸{mask.shape}必须为{mask_shape}")
+            mask_pixels = int(np.count_nonzero(mask))
         except Exception as exc:
             self._记录失败(配置, str(exc))
             return None
 
         center_error = math.hypot(disk[0] - origin[0], disk[1] - origin[1])
         arrow_radius = math.hypot(target[0] - origin[0], target[1] - origin[1])
-        mask_pixels = int(np.count_nonzero(mask))
         if center_error > 5.0:
             self._记录失败(配置, f"圆盘中心偏差{center_error:.3f}px超过5px")
             return None
@@ -350,14 +358,17 @@ class 三色精准角度识别器:
         配置列表: list[颜色配置],
         图像: np.ndarray,
     ) -> 精准角度结果 | None:
-        最佳: 精准角度结果 | None = None
+        候选列表: list[精准角度结果] = []
         for 配置 in 配置列表:
             候选 = self._识别单色(配置, 图像)
-            if 候选 is not None and (
-                最佳 is None or 候选.confidence - 最佳.confidence >= 1e-9
-            ):
-                最佳 = 候选
-        return 最佳
+            if 候选 is not None:
+                候选列表.append(候选)
+        if not 候选列表:
+            return None
+        最高质量 = max(候选.confidence for 候选 in 候选列表)
+        return next(
+            候选 for 候选 in 候选列表 if 最高质量 - 候选.confidence < 1e-9
+        )
 
     def 识别(self, 图像) -> 精准角度结果 | None:
         if (
@@ -370,12 +381,14 @@ class 三色精准角度识别器:
             self._清除待切换()
             return None
         if not self._可用配置:
+            self._最近错误 = "无可用颜色标定：" + "；".join(self._加载错误)
             return None
 
         if self._当前颜色 is None:
             候选 = self._最佳候选(self._可用配置, 图像)
             if 候选 is None:
                 self._清除待切换()
+                self._最近错误 = "三色均未识别到有效候选"
                 return None
             self._当前颜色 = 候选.color
             self._清除待切换()
@@ -390,11 +403,13 @@ class 三色精准角度识别器:
             self._清除待切换()
             self._最近错误 = None
             return 当前候选
+        当前失败 = self._最近错误 or f"{当前配置.名称}识别失败"
 
         其它配置 = [配置 for 配置 in self._可用配置 if 配置 is not 当前配置]
         切换候选 = self._最佳候选(其它配置, 图像)
         if 切换候选 is None:
             self._清除待切换()
+            self._最近错误 = 当前失败
             return None
         if self._待切换颜色 == 切换候选.color:
             self._待切换计数 += 1
@@ -402,6 +417,9 @@ class 三色精准角度识别器:
             self._待切换颜色 = 切换候选.color
             self._待切换计数 = 1
         if self._待切换计数 < 2:
+            self._最近错误 = (
+                f"{当前失败}；等待{切换候选.color} {self._待切换计数}/2"
+            )
             return None
 
         self._当前颜色 = 切换候选.color

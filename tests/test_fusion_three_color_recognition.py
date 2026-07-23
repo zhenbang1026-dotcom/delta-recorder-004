@@ -88,36 +88,6 @@ def _创建真实箭头图(
     return 图像, 期望角
 
 
-def _创建门禁图(配置, 模式: str) -> np.ndarray:
-    中心_x, 中心_y, _标定 = _中心原图坐标(配置, 项目根目录)
-    颜色 = _十六进制转BGR(配置.代表色)
-    黑色 = (0, 0, 0)
-    图像 = np.zeros((193, 193, 3), dtype=np.uint8)
-
-    if 模式 == "单连通域":
-        cv2.circle(图像, (中心_x, 中心_y), 5, 颜色, -1)
-    elif 模式 == "圆盘偏心":
-        cv2.circle(图像, (中心_x, 中心_y + 3), 5, 颜色, -1)
-        cv2.circle(图像, (中心_x + 9, 中心_y + 3), 2, 颜色, -1)
-    elif 模式 == "半径过小":
-        cv2.circle(图像, (中心_x, 中心_y), 6, 颜色, -1)
-        cv2.circle(图像, (中心_x, 中心_y), 4, 黑色, -1)
-        cv2.circle(图像, (中心_x + 1, 中心_y), 2, 颜色, -1)
-    elif 模式 == "半径过大":
-        cv2.circle(图像, (中心_x, 中心_y), 5, 颜色, -1)
-        cv2.circle(图像, (中心_x + 12, 中心_y), 2, 颜色, -1)
-    elif 模式 == "mask过小":
-        cv2.circle(图像, (中心_x, 中心_y), 2, 颜色, -1)
-        cv2.circle(图像, (中心_x + 5, 中心_y), 1, 颜色, -1)
-    elif 模式 == "mask过大":
-        cv2.circle(图像, (中心_x, 中心_y), 13, 颜色, -1)
-        cv2.circle(图像, (中心_x, 中心_y), 9, 黑色, -1)
-        cv2.circle(图像, (中心_x + 6, 中心_y), 2, 颜色, -1)
-    else:
-        raise AssertionError(f"未知门禁模式：{模式}")
-    return 图像
-
-
 def _写有效标定(根目录: Path, 配置) -> None:
     path = 根目录 / 配置.校准相对路径
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +101,39 @@ def _写有效标定(根目录: Path, 配置) -> None:
 
 def _候选(颜色: str, 质量: float, 角度: float = 10.0) -> 精准角度结果:
     return 精准角度结果(angle=角度, color=颜色, confidence=质量, details={})
+
+
+def _设置受控底层详情(
+    monkeypatch: pytest.MonkeyPatch,
+    识别器: 三色精准角度识别器,
+    配置,
+    *,
+    center_error: float = 0.0,
+    arrow_radius: float = 15.75,
+    mask_pixels: int = 400,
+    mask: np.ndarray | None = None,
+) -> None:
+    单色识别器 = 识别器._识别器[配置.名称]
+    x1, y1, x2, y2 = 单色识别器.角度映射数据缓存["crop"]
+    mask_shape = (2 * (y2 - y1), 2 * (x2 - x1))
+    if mask is None:
+        mask = np.zeros(mask_shape, dtype=np.uint8)
+        mask.flat[:mask_pixels] = 255
+    origin = (
+        float(单色识别器.角度映射数据缓存["center_x"]),
+        float(单色识别器.角度映射数据缓存["center_y"]),
+    )
+    单色识别器.最近详情 = {
+        "raw": 10.0,
+        "confidence": 1.0,
+        "origin": origin,
+        "disk": (origin[0] + center_error, origin[1]),
+        "target": (origin[0], origin[1] + arrow_radius),
+        "mask": mask,
+        "debug": np.zeros((*mask_shape, 3), dtype=np.uint8),
+        "calibration_source": "map",
+    }
+    monkeypatch.setattr(单色识别器, "识别角度", lambda 图像数据: 10.0)
 
 
 @pytest.mark.parametrize(
@@ -193,15 +196,99 @@ def test质量公式和详情字段精确匹配() -> None:
     assert 结果.details["color_hex"] == 配置.代表色
 
 
-@pytest.mark.parametrize(
-    "模式",
-    ["单连通域", "圆盘偏心", "半径过小", "半径过大", "mask过小", "mask过大"],
-)
-def test真实图像不满足几何门禁时返回None(模式: str) -> None:
+def test真实单连通域图像返回None并记录原因() -> None:
     配置 = FUSION颜色配置[0]
     识别器 = 三色精准角度识别器(项目根目录)
+    中心_x, 中心_y, _标定 = _中心原图坐标(配置, 项目根目录)
+    图像 = np.zeros((193, 193, 3), dtype=np.uint8)
+    cv2.circle(图像, (中心_x, 中心_y), 5, _十六进制转BGR(配置.代表色), -1)
 
-    assert 识别器.识别(_创建门禁图(配置, 模式)) is None
+    assert 识别器._识别单色(配置, 图像) is None
+    assert "连通域" in str(识别器.最近错误)
+
+
+@pytest.mark.parametrize(
+    ("字段", "数值", "原因"),
+    [
+        ("center_error", 5.01, "圆盘中心偏差"),
+        ("arrow_radius", 9.99, "箭头半径"),
+        ("arrow_radius", 22.01, "箭头半径"),
+        ("mask_pixels", 199, "mask像素"),
+        ("mask_pixels", 801, "mask像素"),
+    ],
+)
+def test受控详情只命中目标几何门禁(
+    monkeypatch: pytest.MonkeyPatch,
+    字段: str,
+    数值: float,
+    原因: str,
+) -> None:
+    配置 = FUSION颜色配置[0]
+    识别器 = 三色精准角度识别器(项目根目录)
+    _设置受控底层详情(monkeypatch, 识别器, 配置, **{字段: 数值})
+
+    assert 识别器._识别单色(配置, np.zeros((1, 1, 3), dtype=np.uint8)) is None
+    assert 原因 in str(识别器.最近错误)
+
+
+@pytest.mark.parametrize(
+    ("字段", "数值"),
+    [
+        ("center_error", 5.0),
+        ("arrow_radius", 10.0),
+        ("arrow_radius", 22.0),
+        ("mask_pixels", 200),
+        ("mask_pixels", 800),
+    ],
+)
+def test几何门禁闭区间端点通过(
+    monkeypatch: pytest.MonkeyPatch,
+    字段: str,
+    数值: float,
+) -> None:
+    配置 = FUSION颜色配置[0]
+    识别器 = 三色精准角度识别器(项目根目录)
+    _设置受控底层详情(monkeypatch, 识别器, 配置, **{字段: 数值})
+
+    结果 = 识别器._识别单色(配置, np.zeros((1, 1, 3), dtype=np.uint8))
+
+    assert 结果 is not None
+    assert 结果.details[字段] == pytest.approx(数值)
+
+
+@pytest.mark.parametrize(
+    ("错误类型", "原因"),
+    [("dtype", "uint8"), ("ndim", "二维"), ("shape", "尺寸")],
+)
+def test非法mask结构返回None并记录可读原因(
+    monkeypatch: pytest.MonkeyPatch,
+    错误类型: str,
+    原因: str,
+) -> None:
+    配置 = FUSION颜色配置[0]
+    识别器 = 三色精准角度识别器(项目根目录)
+    单色识别器 = 识别器._识别器[配置.名称]
+    x1, y1, x2, y2 = 单色识别器.角度映射数据缓存["crop"]
+    正确shape = (2 * (y2 - y1), 2 * (x2 - x1))
+    if 错误类型 == "dtype":
+        class 布尔求值异常:
+            def __bool__(self) -> bool:
+                raise RuntimeError("object mask不应进入像素计数")
+
+        mask = np.zeros(正确shape, dtype=object)
+        mask.flat[0] = 布尔求值异常()
+    elif 错误类型 == "ndim":
+        mask = np.zeros((*正确shape, 1), dtype=np.uint8)
+        mask.flat[:400] = 255
+    else:
+        mask = np.zeros((正确shape[0] - 1, 正确shape[1]), dtype=np.uint8)
+        mask.flat[:400] = 255
+    _设置受控底层详情(monkeypatch, 识别器, 配置, mask=mask)
+
+    结果 = 识别器._识别单色(配置, np.zeros((1, 1, 3), dtype=np.uint8))
+
+    assert 结果 is None
+    assert 原因 in str(识别器.最近错误)
 
 
 @pytest.mark.parametrize(
@@ -302,6 +389,23 @@ def test未锁定扫描三色并按质量和固定顺序锁定(
     assert 识别器.当前颜色 == "绿色"
 
 
+def test近似同分链以全体最高质量为基准(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    识别器 = 三色精准角度识别器(项目根目录)
+    输出 = {
+        "绿色": _候选("绿色", 0.0),
+        "蓝色": _候选("蓝色", 0.9e-9),
+        "黄色": _候选("黄色", 1.8e-9),
+    }
+    monkeypatch.setattr(识别器, "_识别单色", lambda 配置, _图像: 输出[配置.名称])
+
+    结果 = 识别器.识别(np.zeros((1, 1, 3), dtype=np.uint8))
+
+    assert 结果 is 输出["蓝色"]
+    assert 识别器.当前颜色 == "蓝色"
+
+
 def test锁定有效时只调用当前色一次并清除pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -354,6 +458,50 @@ def test连续两帧候选才从绿色切换到蓝色(
     assert 识别器.当前颜色 == "蓝色"
     assert 识别器.待切换颜色 is None
     assert 识别器.待切换计数 == 0
+
+
+def test待切换时最终诊断明确等待颜色而非扫描中间错误(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    识别器 = 三色精准角度识别器(项目根目录)
+    输出 = {"绿色": _候选("绿色", 0.8), "蓝色": None, "黄色": None}
+
+    def 假识别(配置, _图像):
+        候选 = 输出[配置.名称]
+        if 候选 is None:
+            识别器._最近错误 = f"{配置.名称}识别失败：受控失败"
+        return 候选
+
+    monkeypatch.setattr(识别器, "_识别单色", 假识别)
+    识别器.识别(np.zeros((1, 1, 3), dtype=np.uint8))
+    输出.update({"绿色": None, "蓝色": _候选("蓝色", 0.9)})
+
+    assert 识别器.识别(np.zeros((1, 1, 3), dtype=np.uint8)) is None
+    assert 识别器.待切换颜色 == "蓝色"
+    assert "绿色识别失败" in str(识别器.最近错误)
+    assert "等待蓝色 1/2" in str(识别器.最近错误)
+    assert "黄色识别失败" not in str(识别器.最近错误)
+
+
+def test当前色失败且无替代候选时保留当前色诊断(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    识别器 = 三色精准角度识别器(项目根目录)
+    输出 = {"绿色": _候选("绿色", 0.8), "蓝色": None, "黄色": None}
+
+    def 假识别(配置, _图像):
+        候选 = 输出[配置.名称]
+        if 候选 is None:
+            识别器._最近错误 = f"{配置.名称}识别失败：受控失败"
+        return 候选
+
+    monkeypatch.setattr(识别器, "_识别单色", 假识别)
+    识别器.识别(np.zeros((1, 1, 3), dtype=np.uint8))
+    输出["绿色"] = None
+
+    assert 识别器.识别(np.zeros((1, 1, 3), dtype=np.uint8)) is None
+    assert "绿色识别失败" in str(识别器.最近错误)
+    assert "黄色识别失败" not in str(识别器.最近错误)
 
 
 def test待切蓝色时旧绿色恢复会保留绿色并清pending(
@@ -450,7 +598,11 @@ def test三色资产全不可用时构造和识别均不崩溃(tmp_path: Path) -
     识别器 = 三色精准角度识别器(tmp_path)
 
     assert len(识别器.加载错误) == 3
+    识别器.reset()
+    assert 识别器.最近错误 is None
     assert 识别器.识别(np.zeros((193, 193, 3), dtype=np.uint8)) is None
+    assert "无可用颜色标定" in str(识别器.最近错误)
     for 配置 in FUSION颜色配置:
         assert 配置.名称 in "\n".join(识别器.加载错误)
         assert str((tmp_path / 配置.校准相对路径).resolve()) in "\n".join(识别器.加载错误)
+        assert 配置.名称 in str(识别器.最近错误)
