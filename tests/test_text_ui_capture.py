@@ -75,16 +75,71 @@ def test运行期间不能切换为与截图bbox不一致的模式() -> None:
     assert app.angle_bbox_var.get() == 测试角度模块.ANGLE_LEGACY_BBOX
 
 
-def test默认text识别器照搬外部脚本实际蓝色配置() -> None:
+def test默认text识别器自动加载三色校准() -> None:
     recognizer = text角度模块.默认识别器()
 
-    assert Path(recognizer.lv_txt路径).parent.name == "校准截图蓝色"
-    assert Path(recognizer.lv_txt路径).is_file()
-    assert recognizer.箭头HSV == ([100, 50, 50], [130, 255, 255])
+    assert isinstance(recognizer, text角度模块.多颜色角度识别器)
+    configs = {
+        name: (Path(item.lv_txt路径).parent.name, item.箭头HSV)
+        for name, item in recognizer.颜色识别器列表
+    }
+    assert configs == {
+        "蓝色": ("校准截图蓝色", ([100, 50, 50], [130, 255, 255])),
+        "绿色": ("校准截图绿色", ([48, 66, 87], [78, 166, 255])),
+        "黄色": ("校准截图黄色", ([18, 80, 80], [40, 255, 255])),
+    }
+    assert all(Path(item.lv_txt路径).is_file() for _, item in recognizer.颜色识别器列表)
     calibration = recognizer._读取校准数据()
     assert calibration["crop"] == (76, 70, 116, 110)
     assert calibration["center_x"] == pytest.approx(43.061184)
     assert calibration["center_y"] == pytest.approx(42.238440)
+
+
+def test三色识别器选择圆心偏差最小的合法候选() -> None:
+    class 假识别器:
+        def __init__(self, angle, detail):
+            self.angle = angle
+            self.最近详情 = detail
+            self.calls = 0
+
+        def 识别角度(self, 图像数据=None, 显示=False):
+            self.calls += 1
+            return self.angle
+
+    blue = 假识别器(10.0, {"disk_center_error": 2.0, "arrow_area": 100})
+    green = 假识别器(20.0, {"disk_center_error": 0.2, "arrow_area": 50})
+    yellow = 假识别器(None, {"error": "连通域不足: 1"})
+    recognizer = text角度模块.多颜色角度识别器(
+        [("蓝色", blue), ("绿色", green), ("黄色", yellow)]
+    )
+
+    angle = recognizer.识别角度(图像数据=np.zeros((10, 10, 3), dtype=np.uint8))
+
+    assert angle == 20.0
+    assert recognizer.最近详情["arrow_color"] == "绿色"
+    assert [blue.calls, green.calls, yellow.calls] == [1, 1, 1]
+
+
+def test三色识别全部失败时保留每种颜色原因() -> None:
+    class 假识别器:
+        def __init__(self, reason):
+            self.最近详情 = {"error": reason}
+
+        def 识别角度(self, 图像数据=None, 显示=False):
+            return None
+
+    recognizer = text角度模块.多颜色角度识别器([
+        ("蓝色", 假识别器("蓝失败")),
+        ("绿色", 假识别器("绿失败")),
+        ("黄色", 假识别器("黄失败")),
+    ])
+
+    angle = recognizer.识别角度(图像数据=np.zeros((10, 10, 3), dtype=np.uint8))
+
+    assert angle is None
+    assert recognizer.最近详情 == {
+        "error": "三色识别失败：蓝色=蓝失败；绿色=绿失败；黄色=黄失败"
+    }
 
 
 @pytest.mark.parametrize(
@@ -139,3 +194,35 @@ def testtext分析错误包含识别器具体原因(monkeypatch: pytest.MonkeyPa
             False,
             None,
         )
+
+
+@pytest.mark.parametrize(
+    ("arrow_color", "color_hex"),
+    [("蓝色", "95BBE8"), ("绿色", "9AE77E"), ("黄色", "F0E791")],
+)
+def testtext分析结果传播实际箭头颜色(
+    monkeypatch: pytest.MonkeyPatch,
+    arrow_color: str,
+    color_hex: str,
+) -> None:
+    recognizer = SimpleNamespace(
+        最近详情={
+            "origin": (1.0, 1.0),
+            "target": (2.0, 2.0),
+            "arrow_color": arrow_color,
+        },
+        识别角度=lambda **_kwargs: 123.0,
+    )
+    monkeypatch.setattr(测试角度模块, "_text_recognizer", recognizer)
+
+    result = 测试角度模块._analyze_image_text_raw(
+        np.zeros((10, 10, 3), dtype=np.uint8),
+        [],
+        0,
+        0,
+        False,
+        None,
+    )
+
+    assert result.color_hex == color_hex
+    assert result.arrow_color == arrow_color

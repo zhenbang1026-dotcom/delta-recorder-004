@@ -774,7 +774,12 @@ def _analyze_image_text_raw(image_bgr, colors, tolerance, min_area, clean_mask, 
         debug = draw_angle_debug(cropped, float(raw), origin, target, [])
     if mask is None:
         mask = np.zeros(cropped.shape[:2], dtype=np.uint8)
-    result = AnalysisResult(float(raw), origin, target, debug, mask, offset, "9AE77E")
+    arrow_color = str(detail.get("arrow_color", "绿色"))
+    color_hex = {"蓝色": "95BBE8", "绿色": "9AE77E", "黄色": "F0E791"}.get(
+        arrow_color, "9AE77E"
+    )
+    result = AnalysisResult(float(raw), origin, target, debug, mask, offset, color_hex)
+    result.arrow_color = arrow_color
     result.confidence = float(detail.get("confidence", 0.5))
     result.calibration_source = str(detail.get("calibration_source", "unknown"))
     result.observation_source = "text"

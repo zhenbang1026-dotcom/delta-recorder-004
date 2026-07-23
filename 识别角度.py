@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""text 项目箭头角度识别（004 适配版）。
+"""text 项目三色箭头角度识别（004 适配版）。
 
-- 算法：HSV 绿箭头 + 连通域 + atan2 + 零号大坝 +90°
-- 配置：照搬外部脚本实际入口的蓝色 HSV 与蓝色校准
+- 算法：蓝/绿/黄 HSV + 连通域 + atan2 + 零号大坝 +90°
+- 配置：每种颜色使用各自 HSV 与校准数据
 - 截图：统一走 截图模块（GDI→mss→pil），不使用 dxcam
 """
 from __future__ import annotations
@@ -20,6 +20,7 @@ import numpy as np
 # 与 text 校准一致：left, top, right, bottom
 DEFAULT_RADAR_LTRB = (34, 78, 227, 271)
 箭头最小连通域面积 = 20
+圆盘中心最大偏差 = 3.0
 
 
 def _load_capture():
@@ -193,6 +194,12 @@ class 角度识别器:
             )
         箭头_x, 箭头_y = float(质心s[箭头_label][0]), float(质心s[箭头_label][1])
         圆心_x, 圆心_y = float(质心s[圆_label][0]), float(质心s[圆_label][1])
+        圆盘面积 = int(统计[圆_label, cv2.CC_STAT_AREA])
+        圆盘中心偏差 = math.hypot(圆心_x - 精准中心_x, 圆心_y - 精准中心_y)
+        if 圆盘中心偏差 > 圆盘中心最大偏差:
+            return self._失败(
+                f"圆盘中心偏离校准中心: {圆盘中心偏差:.3f} > {圆盘中心最大偏差:.3f}"
+            )
 
         dx = 箭头_x - 精准中心_x
         dy = 箭头_y - 精准中心_y
@@ -215,6 +222,9 @@ class 角度识别器:
             "origin": (float(精准中心_x), float(精准中心_y)),
             "target": (箭头_x, 箭头_y),
             "disk": (圆心_x, 圆心_y),
+            "arrow_area": 箭头面积,
+            "disk_area": 圆盘面积,
+            "disk_center_error": float(圆盘中心偏差),
             "mask": 掩码颜色,
             "debug": 放大图,
         }
@@ -240,18 +250,90 @@ class 角度识别器:
         return float(简单角度)
 
 
-def 默认识别器(静默: bool = True) -> 角度识别器:
+class 多颜色角度识别器:
+    """在同一雷达截图上运行多套单色 TEXT 校准并选择最可信候选。"""
+
+    def __init__(self, 颜色识别器列表: list[tuple[str, 角度识别器]]):
+        if not 颜色识别器列表:
+            raise ValueError("颜色识别器列表不能为空")
+        self.颜色识别器列表 = list(颜色识别器列表)
+        首个识别器 = self.颜色识别器列表[0][1]
+        self.lv_txt路径 = getattr(首个识别器, "lv_txt路径", "")
+        self.雷达范围 = getattr(首个识别器, "雷达范围", DEFAULT_RADAR_LTRB)
+        self.箭头HSV = getattr(首个识别器, "箭头HSV", None)
+        self.最近详情 = None
+
+    def _读取校准数据(self):
+        return self.颜色识别器列表[0][1]._读取校准数据()
+
+    def 截图(self):
+        return self.颜色识别器列表[0][1].截图()
+
+    def 识别角度(self, 图像数据=None, 显示=False):
+        self.最近详情 = None
+        if 图像数据 is None:
+            图像数据 = self.截图()
+        if 图像数据 is None or getattr(图像数据, "size", 0) == 0:
+            self.最近详情 = {"error": "截图空"}
+            return None
+
+        候选列表 = []
+        失败原因 = []
+        for 颜色名称, 识别器 in self.颜色识别器列表:
+            angle = 识别器.识别角度(图像数据=图像数据, 显示=False)
+            detail = dict(识别器.最近详情 or {})
+            if angle is None:
+                失败原因.append(f"{颜色名称}={detail.get('error', '未知原因')}")
+                continue
+            候选列表.append((
+                float(detail.get("disk_center_error", float("inf"))),
+                -float(detail.get("arrow_area", 0)),
+                颜色名称,
+                识别器,
+                float(angle),
+                detail,
+            ))
+
+        if not 候选列表:
+            self.最近详情 = {"error": "三色识别失败：" + "；".join(失败原因)}
+            return None
+
+        _, _, 颜色名称, 识别器, angle, detail = min(
+            候选列表, key=lambda item: (item[0], item[1])
+        )
+        if 显示:
+            shown_angle = 识别器.识别角度(图像数据=图像数据, 显示=True)
+            if shown_angle is not None:
+                angle = float(shown_angle)
+                detail = dict(识别器.最近详情 or detail)
+        detail["arrow_color"] = 颜色名称
+        self.最近详情 = detail
+        return angle
+
+
+def 默认识别器(静默: bool = True) -> 多颜色角度识别器:
     base = Path(__file__).resolve().parent
-    lv = base / "校准截图蓝色" / "lv.txt"
-    if not lv.is_file():
-        lv = base / "lv.txt"
-    return 角度识别器(
-        lv_txt路径=str(lv),
-        雷达范围=DEFAULT_RADAR_LTRB,
-        箭头HSV=([100, 50, 50], [130, 255, 255]),
-        当前地图="零号大坝",
-        静默=静默,
-    )
+    蓝色校准 = base / "校准截图蓝色" / "lv.txt"
+    if not 蓝色校准.is_file():
+        蓝色校准 = base / "lv.txt"
+    配置列表 = [
+        ("蓝色", 蓝色校准, ([100, 50, 50], [130, 255, 255])),
+        ("绿色", base / "校准截图绿色" / "lv.txt", ([48, 66, 87], [78, 166, 255])),
+        ("黄色", base / "校准截图黄色" / "lv.txt", ([18, 80, 80], [40, 255, 255])),
+    ]
+    return 多颜色角度识别器([
+        (
+            颜色名称,
+            角度识别器(
+                lv_txt路径=str(lv路径),
+                雷达范围=DEFAULT_RADAR_LTRB,
+                箭头HSV=hsv范围,
+                当前地图="零号大坝",
+                静默=静默,
+            ),
+        )
+        for 颜色名称, lv路径, hsv范围 in 配置列表
+    ])
 
 
 if __name__ == "__main__":

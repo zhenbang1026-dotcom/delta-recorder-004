@@ -115,3 +115,19 @@ def testtext拒绝面积过小的第二连通域(tmp_path: Path) -> None:
     error = recognizer.最近详情["error"]
     assert error.startswith("箭头面积过小: ")
     assert int(error.split()[1]) < 角度模块.箭头最小连通域面积
+
+
+def testtext拒绝偏离校准中心的圆盘(tmp_path: Path) -> None:
+    calibration = tmp_path / "lv.txt"
+    calibration.write_text(
+        "SRC_CROP:0,0,100,100\n"
+        "PRECISE_CENTER:20,20\n",
+        encoding="utf-8",
+    )
+    image = _创建零度箭头图()
+    recognizer = 角度模块.角度识别器(str(calibration))
+
+    angle = recognizer.识别角度(图像数据=image)
+
+    assert angle is None
+    assert recognizer.最近详情["error"].startswith("圆盘中心偏离校准中心: ")
