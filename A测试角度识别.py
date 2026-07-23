@@ -935,7 +935,14 @@ def _analyze_image_fusion(image_bgr, colors, tolerance, min_area, clean_mask, re
     result.angle = float(fused.angle)
     result.observation_source = "precise" if fused.source == "text" else fused.source
     result.confidence = float(fused.confidence)
-    result.fusion_reason = fused.reason.replace("TEXT", "精准三色")
+    fusion_reason_parts = [fused.reason.replace("TEXT", "精准三色")]
+    if precise_color is not None:
+        fusion_reason_parts.append(f"精准颜色={precise_color}")
+    if precise_quality is not None:
+        fusion_reason_parts.append(f"精准质量={precise_quality:.3f}")
+    if precise_error is not None:
+        fusion_reason_parts.append(f"精准状态={precise_error}")
+    result.fusion_reason = " | ".join(fusion_reason_parts).replace("TEXT", "精准三色")
     result.fusion_difference = fusion_difference
     result.precise_color = precise_color
     result.precise_quality = precise_quality

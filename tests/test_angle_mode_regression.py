@@ -154,9 +154,9 @@ def testfusion在同一精准大图裁出legacy相对roi且对外映射精准来
     assert legacy_result.fusion_difference == 99.0
 
 
-def testfusion精准失败时降级legacy并记录兼容错误字段(monkeypatch) -> None:
+def testfusion等待切色时降级legacy并把状态写入原因(monkeypatch) -> None:
     class FailedPreciseRecognizer:
-        最近错误 = "精准三色测试错误"
+        最近错误 = "等待蓝色 1/2"
 
         def reset(self):
             pass
@@ -183,10 +183,11 @@ def testfusion精准失败时降级legacy并记录兼容错误字段(monkeypatch
     assert result.fusion_difference is None
     assert result.precise_color is None
     assert result.precise_quality is None
-    assert "精准三色测试错误" in result.precise_error
+    assert result.precise_error == "等待蓝色 1/2"
     assert result.text_error == result.precise_error
     assert result.legacy_error is None
     assert "精准三色 无效" in result.fusion_reason
+    assert "精准状态=等待蓝色 1/2" in result.fusion_reason
     assert "TEXT" not in result.fusion_reason
 
 
@@ -241,7 +242,11 @@ def testfusion精准成功legacy失败时复用精准详情(monkeypatch) -> None
     assert result.text_error is None
     assert "Legacy测试错误" in result.legacy_error
     assert result.fusion_difference is None
-    assert result.fusion_reason == "Legacy 无效，采用 精准三色"
+    assert "Legacy 无效，采用 精准三色" in result.fusion_reason
+    assert "精准颜色=蓝色" in result.fusion_reason
+    assert "精准质量=0.910" in result.fusion_reason
+    assert "精准状态=" not in result.fusion_reason
+    assert "TEXT" not in result.fusion_reason
 
 
 def testfusion两路均失败时错误明确使用精准三色名称(monkeypatch) -> None:
@@ -382,7 +387,10 @@ def testfusion低质量精准观测降级legacy并保留可读诊断(monkeypatch
     )
 
     assert result.observation_source == "legacy"
-    assert result.fusion_reason == "精准三色 无效，降级 Legacy"
+    assert "精准三色 无效，降级 Legacy" in result.fusion_reason
+    assert "精准颜色=黄色" in result.fusion_reason
+    assert "精准质量=0.098" in result.fusion_reason
+    assert f"精准状态={result.precise_error}" in result.fusion_reason
     assert result.precise_color == "黄色"
     assert result.precise_quality == 0.0975
     assert "质量" in result.precise_error
@@ -390,6 +398,7 @@ def testfusion低质量精准观测降级legacy并保留可读诊断(monkeypatch
     assert "0.5" in result.precise_error
     assert result.text_error == result.precise_error
     assert result.fusion_difference == 1.0
+    assert "TEXT" not in result.fusion_reason
 
 
 @pytest.mark.parametrize(
@@ -434,6 +443,10 @@ def testfusion非有限精准观测降级legacy且不崩溃(
     )
 
     assert result.observation_source == "legacy"
-    assert result.fusion_reason == "精准三色 无效，降级 Legacy"
+    assert "精准三色 无效，降级 Legacy" in result.fusion_reason
+    assert "精准颜色=绿色" in result.fusion_reason
+    assert f"精准质量={confidence:.3f}" in result.fusion_reason
     assert error_fragment in result.precise_error
+    assert f"精准状态={result.precise_error}" in result.fusion_reason
     assert result.text_error == result.precise_error
+    assert "TEXT" not in result.fusion_reason
