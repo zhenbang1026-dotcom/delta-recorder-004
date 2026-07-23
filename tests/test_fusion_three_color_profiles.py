@@ -43,7 +43,7 @@ def _断言标定无效(
     tmp_path: Path,
     内容: str,
     原因片段: str,
-) -> None:
+) -> str:
     path = tmp_path / "无效标定.txt"
     path.write_text(内容, encoding="utf-8")
 
@@ -53,6 +53,154 @@ def _断言标定无效(
     消息 = str(异常.value)
     assert str(path) in 消息
     assert 原因片段 in 消息
+    return 消息
+
+
+@pytest.mark.parametrize(
+    "损坏行",
+    ["MAP 10,10", "SRC_CROP 0,0,1,1", "CORRUPTED RECORD"],
+)
+def test拒绝未知或疑似字段畸形行(tmp_path: Path, 损坏行: str) -> None:
+    内容 = _标定文本() + 损坏行 + "\n"
+    path = tmp_path / "末尾损坏的标定.txt"
+    path.write_text(内容, encoding="utf-8")
+
+    with pytest.raises(标定无效) as 异常:
+        读取并验证标定(path)
+
+    消息 = str(异常.value)
+    assert str(path) in 消息
+    assert "第 364 行" in 消息
+    assert "未知或损坏的记录" in 消息
+    assert 损坏行 in 消息
+
+
+def test读取遇到OSError立即失败且不继续尝试编码(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "无权读取.txt"
+    尝试编码: list[str] = []
+
+    def 假读取(_self: Path, *, encoding: str) -> str:
+        尝试编码.append(encoding)
+        raise OSError("拒绝访问")
+
+    monkeypatch.setattr(Path, "read_text", 假读取)
+
+    with pytest.raises(标定无效) as 异常:
+        读取并验证标定(path)
+
+    消息 = str(异常.value)
+    assert 尝试编码 == ["utf-8-sig"]
+    assert str(path) in 消息
+    assert "无法读取文件" in 消息
+    assert "拒绝访问" in 消息
+
+
+def test所有编码UnicodeDecodeError耗尽后报告失败(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "无法解码.txt"
+    尝试编码: list[str] = []
+
+    def 假读取(_self: Path, *, encoding: str) -> str:
+        尝试编码.append(encoding)
+        raise UnicodeDecodeError(encoding, b"\xff", 0, 1, "非法字节")
+
+    monkeypatch.setattr(Path, "read_text", 假读取)
+
+    with pytest.raises(标定无效) as 异常:
+        读取并验证标定(path)
+
+    消息 = str(异常.value)
+    assert 尝试编码 == ["utf-8-sig", "utf-8", "gbk", "gb18030"]
+    assert str(path) in 消息
+    assert "无法使用 utf-8-sig、utf-8、gbk 或 gb18030 解码" in 消息
+
+
+@pytest.mark.parametrize(
+    ("内容", "行号", "原因片段"),
+    [
+        (
+            _标定文本().replace(
+                "SRC_CROP:0,0,100,100\n",
+                "SRC_CROP:0,0,100,100\nSRC_CROP:0,0,100,100\n",
+            ),
+            2,
+            "重复 SRC_CROP",
+        ),
+        (
+            _标定文本().replace(
+                "PRECISE_CENTER:100,100\n",
+                "PRECISE_CENTER:100,100\nPRECISE_CENTER:100,100\n",
+            ),
+            3,
+            "重复 PRECISE_CENTER",
+        ),
+    ],
+)
+def test拒绝重复单值字段(
+    tmp_path: Path,
+    内容: str,
+    行号: int,
+    原因片段: str,
+) -> None:
+    消息 = _断言标定无效(tmp_path, 内容, 原因片段)
+    assert f"第 {行号} 行" in 消息
+
+
+@pytest.mark.parametrize(
+    ("内容", "行号", "原因片段"),
+    [
+        (_标定文本(crop="0,0,100"), 1, "SRC_CROP 必须是四个整数"),
+        (_标定文本(center="100"), 2, "PRECISE_CENTER 必须是两个数"),
+        (
+            _标定文本(map行=["MAP:0"] + _均匀MAP()[1:]),
+            4,
+            "MAP 必须是两个数",
+        ),
+    ],
+)
+def test拒绝字段数量错误且报告行号(
+    tmp_path: Path,
+    内容: str,
+    行号: int,
+    原因片段: str,
+) -> None:
+    消息 = _断言标定无效(tmp_path, 内容, 原因片段)
+    assert f"第 {行号} 行" in 消息
+
+
+@pytest.mark.parametrize(
+    ("内容", "行号", "原因片段"),
+    [
+        (_标定文本(crop="0,坏,100,100"), 1, "SRC_CROP 必须是四个整数"),
+        (_标定文本(center="100,坏"), 2, "PRECISE_CENTER 必须是两个数"),
+        (
+            _标定文本(map行=["MAP:坏,0"] + _均匀MAP()[1:]),
+            4,
+            "MAP 必须是两个数",
+        ),
+    ],
+)
+def test拒绝普通非法数值且报告行号(
+    tmp_path: Path,
+    内容: str,
+    行号: int,
+    原因片段: str,
+) -> None:
+    消息 = _断言标定无效(tmp_path, 内容, 原因片段)
+    assert f"第 {行号} 行" in 消息
+
+
+def test拒绝有限但非整数的游戏角且报告行号(tmp_path: Path) -> None:
+    内容 = _标定文本(map行=["MAP:0,1.5"] + _均匀MAP()[1:])
+
+    消息 = _断言标定无效(tmp_path, 内容, "MAP 游戏角必须是整数")
+
+    assert "第 4 行" in 消息
 
 
 def testFusion三色配置使用精确参数且冻结() -> None:
@@ -185,15 +333,16 @@ def test拒绝缺少必需字段(tmp_path: Path, 内容: str, 原因片段: str)
 
 
 @pytest.mark.parametrize(
-    "内容",
+    ("内容", "行号"),
     [
-        _标定文本(center="nan,100"),
-        _标定文本(map行=["MAP:inf,0"] + _均匀MAP()[1:]),
-        _标定文本(map行=["MAP:0,nan"] + _均匀MAP()[1:]),
+        (_标定文本(center="nan,100"), 2),
+        (_标定文本(map行=["MAP:inf,0"] + _均匀MAP()[1:]), 4),
+        (_标定文本(map行=["MAP:0,nan"] + _均匀MAP()[1:]), 4),
     ],
 )
-def test拒绝非有限数(tmp_path: Path, 内容: str) -> None:
-    _断言标定无效(tmp_path, 内容, "非有限")
+def test拒绝非有限数(tmp_path: Path, 内容: str, 行号: int) -> None:
+    消息 = _断言标定无效(tmp_path, 内容, "非有限")
+    assert f"第 {行号} 行" in 消息
 
 
 @pytest.mark.parametrize(
@@ -207,13 +356,15 @@ def test拒绝非有限数(tmp_path: Path, 内容: str) -> None:
     ],
 )
 def test拒绝非正或越出193画布的crop(tmp_path: Path, crop: str) -> None:
-    _断言标定无效(tmp_path, _标定文本(crop=crop), "SRC_CROP")
+    消息 = _断言标定无效(tmp_path, _标定文本(crop=crop), "SRC_CROP")
+    assert "第 1 行" in 消息
 
 
 @pytest.mark.parametrize("center", ["-0.1,10", "10,-0.1", "20,10", "10,20"])
 def test拒绝越出两倍crop的精准中心(tmp_path: Path, center: str) -> None:
     内容 = _标定文本(crop="10,20,20,30", center=center)
-    _断言标定无效(tmp_path, 内容, "PRECISE_CENTER")
+    消息 = _断言标定无效(tmp_path, 内容, "PRECISE_CENTER")
+    assert "第 2 行" in 消息
 
 
 def test拒绝少于300条map(tmp_path: Path) -> None:
@@ -234,11 +385,12 @@ def test拒绝越出角度范围的map(
     无效行: str,
     原因片段: str,
 ) -> None:
-    _断言标定无效(
+    消息 = _断言标定无效(
         tmp_path,
         _标定文本(map行=[无效行] + _均匀MAP()[1:]),
         原因片段,
     )
+    assert "第 4 行" in 消息
 
 
 def test游戏角360规范化为0(tmp_path: Path) -> None:

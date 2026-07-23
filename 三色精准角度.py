@@ -66,12 +66,17 @@ def 读取并验证标定(path: Path) -> dict[str, object]:
     path = Path(path)
     文本 = _读取标定文本(path)
     crop: tuple[int, int, int, int] | None = None
+    crop行号: int | None = None
     center_x: float | None = None
     center_y: float | None = None
+    center行号: int | None = None
     map_list: list[tuple[float, int]] = []
+    map行号列表: list[int] = []
 
     for 行号, 原始行 in enumerate(文本.splitlines(), start=1):
         行 = 原始行.strip()
+        if not 行 or 行.startswith("#"):
+            continue
         if 行.startswith("SRC_CROP:"):
             if crop is not None:
                 _抛出标定无效(path, f"第 {行号} 行重复 SRC_CROP")
@@ -82,6 +87,7 @@ def 读取并验证标定(path: Path) -> dict[str, object]:
             if len(值) != 4:
                 _抛出标定无效(path, f"第 {行号} 行 SRC_CROP 必须是四个整数")
             crop = 值
+            crop行号 = 行号
         elif 行.startswith("PRECISE_CENTER:"):
             if center_x is not None or center_y is not None:
                 _抛出标定无效(path, f"第 {行号} 行重复 PRECISE_CENTER")
@@ -94,6 +100,7 @@ def 读取并验证标定(path: Path) -> dict[str, object]:
                 _抛出标定无效(path, f"第 {行号} 行 PRECISE_CENTER 必须是两个数")
             if not math.isfinite(center_x) or not math.isfinite(center_y):
                 _抛出标定无效(path, f"第 {行号} 行 PRECISE_CENTER 包含非有限数")
+            center行号 = 行号
         elif 行.startswith("MAP:"):
             部分 = 行.split(":", 1)[1].split(",")
             if len(部分) != 2:
@@ -108,6 +115,10 @@ def 读取并验证标定(path: Path) -> dict[str, object]:
             if not 游戏角数值.is_integer():
                 _抛出标定无效(path, f"第 {行号} 行 MAP 游戏角必须是整数")
             map_list.append((原始角, int(游戏角数值)))
+            map行号列表.append(行号)
+        else:
+            摘要 = 行 if len(行) <= 80 else 行[:77] + "..."
+            _抛出标定无效(path, f"第 {行号} 行未知或损坏的记录：{摘要}")
 
     if crop is None:
         _抛出标定无效(path, "缺少 SRC_CROP")
@@ -118,20 +129,32 @@ def 读取并验证标定(path: Path) -> dict[str, object]:
 
     x1, y1, x2, y2 = crop
     if not (0 <= x1 < x2 <= 193 and 0 <= y1 < y2 <= 193):
-        _抛出标定无效(path, "SRC_CROP 必须为正且不得越出 193x193 画布")
+        _抛出标定无效(
+            path,
+            f"第 {crop行号} 行 SRC_CROP 必须为正且不得越出 193x193 画布",
+        )
 
     两倍宽 = 2 * (x2 - x1)
     两倍高 = 2 * (y2 - y1)
     if not (0 <= center_x < 两倍宽 and 0 <= center_y < 两倍高):
-        _抛出标定无效(path, "PRECISE_CENTER 不得越出 2×crop")
+        _抛出标定无效(
+            path,
+            f"第 {center行号} 行 PRECISE_CENTER 不得越出 2×crop",
+        )
 
     if len(map_list) < 300:
         _抛出标定无效(path, "MAP 数量少于 300")
     for 索引, (原始角, 游戏角) in enumerate(map_list):
         if not 0 <= 原始角 < 360:
-            _抛出标定无效(path, "MAP 原始角必须在 [0, 360)")
+            _抛出标定无效(
+                path,
+                f"第 {map行号列表[索引]} 行 MAP 原始角必须在 [0, 360)",
+            )
         if not 0 <= 游戏角 <= 360:
-            _抛出标定无效(path, "MAP 游戏角必须在 [0, 360]")
+            _抛出标定无效(
+                path,
+                f"第 {map行号列表[索引]} 行 MAP 游戏角必须在 [0, 360]",
+            )
         if 游戏角 == 360:
             map_list[索引] = (原始角, 0)
 
