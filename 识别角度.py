@@ -19,6 +19,7 @@ import numpy as np
 
 # 与 text 校准一致：left, top, right, bottom
 DEFAULT_RADAR_LTRB = (34, 78, 227, 271)
+箭头最小连通域面积 = 20
 
 
 def _load_capture():
@@ -185,6 +186,11 @@ class 角度识别器:
 
         圆_label = int(排序索引[0])
         箭头_label = int(排序索引[1])
+        箭头面积 = int(统计[箭头_label, cv2.CC_STAT_AREA])
+        if 箭头面积 < 箭头最小连通域面积:
+            return self._失败(
+                f"箭头面积过小: {箭头面积} < {箭头最小连通域面积}"
+            )
         箭头_x, 箭头_y = float(质心s[箭头_label][0]), float(质心s[箭头_label][1])
         圆心_x, 圆心_y = float(质心s[圆_label][0]), float(质心s[圆_label][1])
 

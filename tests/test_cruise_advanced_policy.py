@@ -269,6 +269,100 @@ def test_text_mode_no_longer_exposes_removed_fusion_helper():
     assert not hasattr(cruise.实时定位器, "_text融合读角")
 
 
+def test_text_angle_failure_reuses_recent_success_without_refresh(monkeypatch):
+    class 定位器:
+        识别诊断状态 = ""
+        控制诊断状态 = ""
+
+        def __init__(self):
+            self.calls = 0
+
+        def 读取状态(self):
+            self.calls += 1
+            if self.calls == 1:
+                return 12, 34, 56.0
+            raise RuntimeError("无法识别当前朝向（text箭头算法）：箭头面积过小: 12 < 20")
+
+    执行动作 = []
+    定位 = 定位器()
+    控制器 = cruise.巡航控制器(
+        路径点列表=[cruise.路径点(20, 30, 0.0, True)],
+        定位器=定位,
+        执行器=SimpleNamespace(执行=lambda action: 执行动作.append(action)),
+        到点阈值=3,
+        参数=cruise.普通模式参数(),
+        循环间隔=0.0,
+    )
+    monkeypatch.setattr(cruise, "状态读取最大重试次数", 1)
+    monkeypatch.setattr(cruise, "状态读取重试间隔", 0.0)
+
+    assert 控制器._读取状态_带重试() == (12, 34, 56.0)
+    assert 控制器._读取状态_带重试() == (12, 34, 56.0)
+    assert 控制器._连续沿用次数 == 1
+    assert 执行动作 == []
+
+
+def test_text_locator_reuses_only_recent_angle_with_fresh_coordinates(monkeypatch):
+    observations = iter([
+        SimpleNamespace(angle=56.0),
+        RuntimeError("无法识别当前朝向"),
+        RuntimeError("无法识别当前朝向"),
+        RuntimeError("无法识别当前朝向"),
+        SimpleNamespace(angle=60.0),
+        RuntimeError("无法识别当前朝向"),
+    ])
+    coordinates = iter([(12, 34), (13, 35), (14, 36), (15, 37), (16, 38), (17, 39)])
+    times = iter([100.0, 100.03, 100.06, 100.09, 100.10, 100.13])
+
+    def analyze(*_args, **_kwargs):
+        observation = next(observations)
+        if isinstance(observation, Exception):
+            raise observation
+        return observation
+
+    locator = object.__new__(cruise.实时定位器)
+    locator.角度模式 = "text"
+    locator._合并识别器 = SimpleNamespace(角度分析器=analyze, 角度颜色=[])
+    locator._截图小地图与角度 = lambda: (object(), object())
+    locator._识别坐标 = lambda _image: next(coordinates)
+    locator._确认角度跳变 = lambda _x, _y, angle, _retry: angle
+    locator._记录角度诊断 = lambda _result: None
+    locator.最近状态 = None
+    monkeypatch.setattr(cruise.time, "monotonic", lambda: next(times))
+
+    assert locator._读取状态_无锁() == (12, 34, 56.0)
+    assert locator._读取状态_无锁() == (13, 35, 56.0)
+    assert locator._读取状态_无锁() == (14, 36, 56.0)
+    with pytest.raises(RuntimeError, match="无法识别当前朝向"):
+        locator._读取状态_无锁()
+    assert locator._读取状态_无锁() == (16, 38, 60.0)
+    assert locator._读取状态_无锁() == (17, 39, 60.0)
+
+
+@pytest.mark.parametrize(
+    ("mode", "times"),
+    [("text", iter([100.0, 100.11])), ("legacy", iter([100.0]))],
+)
+def test_text_angle_reuse_rejects_timeout_and_never_applies_to_legacy(monkeypatch, mode, times):
+    observations = iter([SimpleNamespace(angle=56.0), RuntimeError("无法识别当前朝向")])
+
+    def analyze(*_args, **_kwargs):
+        observation = next(observations)
+        if isinstance(observation, Exception):
+            raise observation
+        return observation
+
+    locator = object.__new__(cruise.实时定位器)
+    locator.角度模式 = mode
+    locator._合并识别器 = SimpleNamespace(角度分析器=analyze, 角度颜色=[])
+    locator._记录角度诊断 = lambda _result: None
+    monkeypatch.setattr(cruise.time, "monotonic", lambda: next(times))
+
+    assert locator._识别角度(object()) == 56.0
+    with pytest.raises(RuntimeError, match="无法识别当前朝向"):
+        locator._识别角度(object())
+
+
 def test_mode_log_fields_include_continuous_output_without_fusion_diagnostics(monkeypatch):
     设置模式(monkeypatch, "legacy")
     字段 = cruise.模式诊断日志字段(SimpleNamespace(连续控制实际像素=-37))

@@ -86,6 +86,8 @@ TEXT_单次最大转向角度 = 38.0
 转向后最小角度变化 = 4.0
 转向后最小收敛角差 = 6.0
 最近状态最大沿用次数 = 5
+TEXT角度最大沿用帧数 = 2
+TEXT角度最大沿用秒数 = 0.10
 角度颜色识别错误 = ("没有匹配到主颜色", "只找到 0 个颜色像素", "颜色像素未覆盖截图中心", "未找到可用的朝向目标点")
 可重试识别错误 = ("无法识别当前位置", "无法识别当前朝向", *角度颜色识别错误)
 预览宽度 = 600
@@ -565,6 +567,9 @@ class 实时定位器:
         self._角度颜色列表 = [(颜色, self._解析十六进制颜色(颜色)) for 颜色 in 角度颜色]
         self._最近匹配坐标: tuple[int, int] | None = None
         self.最近状态: tuple[int, int, float] | None = None
+        self._text最近有效角度: float | None = None
+        self._text最近有效角度时间: float | None = None
+        self._text角度连续沿用次数 = 0
         self.识别诊断状态 = "未开始"
         self.控制诊断状态 = "待机"
         self.角度诊断颜色 = "--"
@@ -589,6 +594,9 @@ class 实时定位器:
         except Exception:
             self.角度截图区域 = 角度区域_text if mode == "text" else 角度区域_旧
         self.最近状态 = None
+        self._text最近有效角度 = None
+        self._text最近有效角度时间 = None
+        self._text角度连续沿用次数 = 0
         # text：锁定 33.3 px/°；legacy：恢复默认可在线标定
         if mode == "text":
             重置每度像素校准(TEXT_每度像素)
@@ -671,17 +679,43 @@ class 实时定位器:
 
     def _识别角度(self, 图像bgr) -> float:
         if hasattr(self, "_合并识别器"):
-            result = self._合并识别器.角度分析器(
-                图像bgr,
-                self._合并识别器.角度颜色,
-                合并识别模块.角度容差,
-                合并识别模块.角度最小面积,
-                False,
-                None,
-                False,
-            )
+            try:
+                result = self._合并识别器.角度分析器(
+                    图像bgr,
+                    self._合并识别器.角度颜色,
+                    合并识别模块.角度容差,
+                    合并识别模块.角度最小面积,
+                    False,
+                    None,
+                    False,
+                )
+            except RuntimeError:
+                if getattr(self, "角度模式", None) != "text":
+                    raise
+                当前时间 = time.monotonic()
+                最近角度 = getattr(self, "_text最近有效角度", None)
+                最近时间 = getattr(self, "_text最近有效角度时间", None)
+                沿用次数 = getattr(self, "_text角度连续沿用次数", 0)
+                if (
+                    最近角度 is not None
+                    and 最近时间 is not None
+                    and 沿用次数 < TEXT角度最大沿用帧数
+                    and 当前时间 - 最近时间 <= TEXT角度最大沿用秒数
+                ):
+                    self._text角度连续沿用次数 = 沿用次数 + 1
+                    self._角度复查诊断 = (
+                        f"TEXT角度短暂沿用 {self._text角度连续沿用次数}/"
+                        f"{TEXT角度最大沿用帧数}"
+                    )
+                    return float(最近角度)
+                raise
             self._记录角度诊断(result)
-            return float(result.angle)
+            angle = float(result.angle)
+            if getattr(self, "角度模式", None) == "text":
+                self._text最近有效角度 = angle
+                self._text最近有效角度时间 = time.monotonic()
+                self._text角度连续沿用次数 = 0
+            return angle
         for 颜色文本, 颜色rgb in self._角度颜色列表:
             mask = self._颜色阈值(图像bgr, 颜色rgb)
             contours, _ = self._cv2.findContours(mask, self._cv2.RETR_EXTERNAL, self._cv2.CHAIN_APPROX_SIMPLE)

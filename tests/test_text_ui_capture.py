@@ -81,6 +81,10 @@ def test默认text识别器照搬外部脚本实际蓝色配置() -> None:
     assert Path(recognizer.lv_txt路径).parent.name == "校准截图蓝色"
     assert Path(recognizer.lv_txt路径).is_file()
     assert recognizer.箭头HSV == ([100, 50, 50], [130, 255, 255])
+    calibration = recognizer._读取校准数据()
+    assert calibration["crop"] == (76, 70, 116, 110)
+    assert calibration["center_x"] == pytest.approx(43.061184)
+    assert calibration["center_y"] == pytest.approx(42.238440)
 
 
 @pytest.mark.parametrize(
