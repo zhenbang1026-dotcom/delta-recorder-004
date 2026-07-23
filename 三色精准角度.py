@@ -4,6 +4,10 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
+import 识别角度 as 角度模块
+
 
 @dataclass(frozen=True)
 class 颜色配置:
@@ -17,6 +21,14 @@ class 颜色配置:
 
 class 标定无效(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class 精准角度结果:
+    angle: float
+    color: str
+    confidence: float
+    details: dict[str, object]
 
 
 FUSION颜色配置 = (
@@ -174,3 +186,225 @@ def 读取并验证标定(path: Path) -> dict[str, object]:
         "center_y": center_y,
         "map_list": map_list,
     }
+
+
+def _限制到单位区间(数值: float) -> float:
+    return max(0.0, min(1.0, 数值))
+
+
+class 三色精准角度识别器:
+    def __init__(self, 根目录: Path | None = None):
+        self._根目录 = (
+            Path(__file__).resolve().parent if 根目录 is None else Path(根目录).resolve()
+        )
+        self._可用配置: list[颜色配置] = []
+        self._识别器: dict[str, 角度模块.角度识别器] = {}
+        self._加载错误: list[str] = []
+        self._当前颜色: str | None = None
+        self._待切换颜色: str | None = None
+        self._待切换计数 = 0
+        self._最近错误: str | None = None
+
+        for 配置 in FUSION颜色配置:
+            path = (self._根目录 / 配置.校准相对路径).resolve()
+            try:
+                标定 = 读取并验证标定(path)
+                识别器 = 角度模块.角度识别器(
+                    lv_txt路径=str(path),
+                    箭头绿色HSV=(list(配置.hsv下界), list(配置.hsv上界)),
+                    静默=True,
+                )
+                识别器.角度映射数据缓存 = {
+                    "crop": 标定["crop"],
+                    "center_x": 标定["center_x"],
+                    "center_y": 标定["center_y"],
+                    "map_list": list(标定["map_list"]),
+                }
+            except Exception as exc:
+                错误 = f"{配置.名称}标定不可用：{path}：{exc}"
+                self._加载错误.append(错误)
+                self._最近错误 = 错误
+                continue
+            self._可用配置.append(配置)
+            self._识别器[配置.名称] = 识别器
+
+    @property
+    def 当前颜色(self) -> str | None:
+        return self._当前颜色
+
+    @property
+    def 待切换颜色(self) -> str | None:
+        return self._待切换颜色
+
+    @property
+    def 待切换计数(self) -> int:
+        return self._待切换计数
+
+    @property
+    def 加载错误(self) -> tuple[str, ...]:
+        return tuple(self._加载错误)
+
+    @property
+    def 最近错误(self) -> str | None:
+        return self._最近错误
+
+    def reset(self) -> None:
+        self._当前颜色 = None
+        self._清除待切换()
+        self._最近错误 = None
+
+    def _清除待切换(self) -> None:
+        self._待切换颜色 = None
+        self._待切换计数 = 0
+
+    def _记录失败(self, 配置: 颜色配置, 原因: str) -> None:
+        self._最近错误 = f"{配置.名称}识别失败：{原因}"
+
+    def _识别单色(
+        self,
+        配置: 颜色配置,
+        图像: np.ndarray,
+    ) -> 精准角度结果 | None:
+        识别器 = self._识别器[配置.名称]
+        try:
+            angle = 识别器.识别角度(图像数据=图像)
+            详情 = 识别器.最近详情
+            if angle is None or not isinstance(详情, dict):
+                self._记录失败(配置, "未识别到有效的两个连通域")
+                return None
+
+            angle = float(angle)
+            raw = float(详情["raw"])
+            map_confidence = float(详情["confidence"])
+            origin = tuple(float(值) for 值 in 详情["origin"])
+            disk = tuple(float(值) for 值 in 详情["disk"])
+            target = tuple(float(值) for 值 in 详情["target"])
+            mask = 详情["mask"]
+            debug = 详情["debug"]
+            calibration_source = 详情["calibration_source"]
+            if (
+                len(origin) != 2
+                or len(disk) != 2
+                or len(target) != 2
+                or not isinstance(mask, np.ndarray)
+            ):
+                raise ValueError("识别详情结构无效")
+            数值 = (angle, raw, map_confidence, *origin, *disk, *target)
+            if not all(math.isfinite(值) for 值 in 数值):
+                raise ValueError("识别详情包含非有限数")
+            if not 0.0 <= angle < 360.0:
+                raise ValueError("angle不在[0, 360)内")
+        except Exception as exc:
+            self._记录失败(配置, str(exc))
+            return None
+
+        center_error = math.hypot(disk[0] - origin[0], disk[1] - origin[1])
+        arrow_radius = math.hypot(target[0] - origin[0], target[1] - origin[1])
+        mask_pixels = int(np.count_nonzero(mask))
+        if center_error > 5.0:
+            self._记录失败(配置, f"圆盘中心偏差{center_error:.3f}px超过5px")
+            return None
+        if not 10.0 <= arrow_radius <= 22.0:
+            self._记录失败(配置, f"箭头半径{arrow_radius:.3f}px不在[10, 22]内")
+            return None
+        if not 200 <= mask_pixels <= 800:
+            self._记录失败(配置, f"mask像素{mask_pixels}不在[200, 800]内")
+            return None
+
+        center_score = _限制到单位区间(1.0 - center_error / 5.0)
+        radius_score = _限制到单位区间(
+            1.0 - abs(arrow_radius - 15.75) / 6.25
+        )
+        mask_score = _限制到单位区间(
+            1.0 - abs(mask_pixels - 配置.mask期望值) / 300.0
+        )
+        quality = (
+            0.35 * center_score
+            + 0.30 * radius_score
+            + 0.20 * mask_score
+            + 0.15 * map_confidence
+        )
+        结果详情: dict[str, object] = {
+            "center_error": center_error,
+            "arrow_radius": arrow_radius,
+            "mask_pixels": mask_pixels,
+            "map_confidence": map_confidence,
+            "quality": quality,
+            "origin": origin,
+            "disk": disk,
+            "target": target,
+            "mask": mask,
+            "debug": debug,
+            "calibration_source": calibration_source,
+            "color_hex": 配置.代表色,
+        }
+        return 精准角度结果(
+            angle=angle,
+            color=配置.名称,
+            confidence=quality,
+            details=结果详情,
+        )
+
+    def _最佳候选(
+        self,
+        配置列表: list[颜色配置],
+        图像: np.ndarray,
+    ) -> 精准角度结果 | None:
+        最佳: 精准角度结果 | None = None
+        for 配置 in 配置列表:
+            候选 = self._识别单色(配置, 图像)
+            if 候选 is not None and (
+                最佳 is None or 候选.confidence > 最佳.confidence
+            ):
+                最佳 = 候选
+        return 最佳
+
+    def 识别(self, 图像) -> 精准角度结果 | None:
+        if (
+            not isinstance(图像, np.ndarray)
+            or 图像.size == 0
+            or 图像.ndim != 3
+            or 图像.shape[2] != 3
+        ):
+            self._最近错误 = "图像无效：需要非空BGR三通道数组"
+            self._清除待切换()
+            return None
+        if not self._可用配置:
+            return None
+
+        if self._当前颜色 is None:
+            候选 = self._最佳候选(self._可用配置, 图像)
+            if 候选 is None:
+                self._清除待切换()
+                return None
+            self._当前颜色 = 候选.color
+            self._清除待切换()
+            self._最近错误 = None
+            return 候选
+
+        当前配置 = next(
+            配置 for 配置 in self._可用配置 if 配置.名称 == self._当前颜色
+        )
+        当前候选 = self._识别单色(当前配置, 图像)
+        if 当前候选 is not None:
+            self._清除待切换()
+            self._最近错误 = None
+            return 当前候选
+
+        其它配置 = [配置 for 配置 in self._可用配置 if 配置 is not 当前配置]
+        切换候选 = self._最佳候选(其它配置, 图像)
+        if 切换候选 is None:
+            self._清除待切换()
+            return None
+        if self._待切换颜色 == 切换候选.color:
+            self._待切换计数 += 1
+        else:
+            self._待切换颜色 = 切换候选.color
+            self._待切换计数 = 1
+        if self._待切换计数 < 2:
+            return None
+
+        self._当前颜色 = 切换候选.color
+        self._清除待切换()
+        self._最近错误 = None
+        return 切换候选
