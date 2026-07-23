@@ -12,6 +12,8 @@ import threading
 import time
 
 from 连续视角控制 import 默认视角速度倍率, 规范化视角速度倍率, 连续视角控制器
+from 路线动作 import 路线动作, 读取路线文件 as 读取动作路线文件
+from 路线动作执行 import 路线动作执行器
 
 
 def _按文件名加载模块(模块名):
@@ -160,6 +162,7 @@ class 路径点:
     y: int
     angle: float
     自动路线: bool = False
+    actions: tuple[路线动作, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -451,6 +454,17 @@ def text微调鼠标像素(角度差: float, 精准缩放: float = 1.0) -> int:
 
 
 def 读取路径(路径文件: str, 自动路线点距: int | None = None) -> list[路径点]:
+    if Path(路径文件).suffix.lower() in {".jsonl", ".json"}:
+        动作路线点 = 读取动作路线文件(路径文件)
+        结果 = [
+            路径点(点.x, 点.y, 点.angle, 点.自动路线, 点.actions)
+            for 点 in 动作路线点
+        ]
+        if 结果 and all(点.自动路线 for 点 in 结果):
+            点距 = 自动路线最小点距 if 自动路线点距 is None else int(自动路线点距)
+            return 抽稀自动路线(结果, 点距)
+        return 结果
+
     内容 = Path(路径文件).read_text(encoding="utf-8-sig").splitlines()
     if not 内容 or all(not 行.strip() for 行 in 内容):
         raise ValueError("路径文件为空")
@@ -485,7 +499,7 @@ def 抽稀自动路线(路径点列表: list[路径点], 最小点距: int = 自
     结果 = [路径点列表[0]]
     上次保留 = 路径点列表[0]
     for 点 in 路径点列表[1:-1]:
-        if 计算距离(上次保留.x, 上次保留.y, 点.x, 点.y) >= 最小点距:
+        if 点.actions or 计算距离(上次保留.x, 上次保留.y, 点.x, 点.y) >= 最小点距:
             结果.append(点)
             上次保留 = 点
     if 结果[-1] != 路径点列表[-1]:
@@ -1462,6 +1476,15 @@ class 巡航控制器:
                 是否卡住, 当前时间 = self._检测卡住(x, y, 距离, 当前索引)
                 setattr(self.定位器, "当前目标点详情", f"{当前索引 + 1}/{len(self.路径点列表)} -> ({当前点.x}, {当前点.y})")
                 if 距离 <= self.到点阈值:
+                    路线动作列表 = getattr(当前点, "actions", ())
+                    if 路线动作列表:
+                        写日志(
+                            self.日志函数,
+                            "event=route_actions",
+                            目标=f"({当前点.x}, {当前点.y})",
+                            动作数=len(路线动作列表),
+                        )
+                        self.执行器.执行路线动作(路线动作列表)
                     if 当前索引 == len(self.路径点列表) - 1:
                         if self.终点对正:
                             self._执行终点对正(当前点, 当前角度)
@@ -1632,12 +1655,16 @@ def 巡航(
         记录器 = 寻路记录器()
     except Exception:
         记录器 = None
+    实际定位器 = 定位器 or 实时定位器()
     执行器参数 = {"视角速度倍率": 视角速度倍率}
+    if any(getattr(点, "actions", ()) for 点 in 路径点列表):
+        执行器参数["定位器"] = 实际定位器
+        执行器参数["日志函数"] = 日志函数
     if 停止事件 is not None:
         执行器参数["停止事件"] = 停止事件
     控制器 = 巡航控制器(
         路径点列表=路径点列表,
-        定位器=定位器 or 实时定位器(),
+        定位器=实际定位器,
         执行器=Win32执行器(**执行器参数),
         到点阈值=到点阈值,
         参数=参数,
@@ -1687,17 +1714,69 @@ class Win32执行器:
         输入模块=win32_input,
         停止事件: threading.Event | None = None,
         *,
+        定位器=None,
+        日志函数=None,
         视角速度倍率=默认视角速度倍率,
         连续控制器工厂=连续视角控制器,
+        路线动作执行器工厂=路线动作执行器,
+        YOLO检测器工厂=None,
+        获取检测区域函数=None,
     ):
         self.输入模块 = 输入模块
         self.停止事件 = 停止事件
+        self.定位器 = 定位器
+        self.日志函数 = 日志函数
         self.视角速度倍率 = 规范化视角速度倍率(视角速度倍率)
         self._连续视角控制器 = 连续控制器工厂(
             输入模块, 视角速度倍率=self.视角速度倍率
         )
         self._正在前进 = False
         self._本段已疾跑 = False
+        self._路线动作执行器工厂 = 路线动作执行器工厂
+        self._YOLO检测器工厂 = YOLO检测器工厂
+        self._获取检测区域函数 = 获取检测区域函数
+        self._YOLO检测器 = None
+
+    def _日志(self, 事件: str, **字段) -> None:
+        写日志(self.日志函数, 事件, **字段)
+
+    def _确保YOLO检测器(self) -> None:
+        if self._YOLO检测器 is not None:
+            return
+        try:
+            if self._YOLO检测器工厂 is None or self._获取检测区域函数 is None:
+                from YOLO物资检测 import 物资检测器, 获取物资检测区域屏幕坐标
+
+                if self._YOLO检测器工厂 is None:
+                    模型路径 = Path(__file__).resolve().parent / "best.onnx"
+                    self._YOLO检测器工厂 = lambda: 物资检测器(模型路径, 日志函数=self.日志函数)
+                if self._获取检测区域函数 is None:
+                    self._获取检测区域函数 = 获取物资检测区域屏幕坐标
+            self._YOLO检测器 = self._YOLO检测器工厂()
+        except Exception as exc:
+            self._日志("event=yolo_load_failed", 错误=str(exc))
+
+    def 执行路线动作(self, actions) -> list[bool]:
+        动作列表 = tuple(actions)
+        if not 动作列表:
+            return []
+        self._停止前进()
+        self._更新视角(0)
+        if any(动作.类型 == "yolo_interact" for 动作 in 动作列表):
+            self._确保YOLO检测器()
+        执行器 = self._路线动作执行器工厂(
+            self.输入模块,
+            定位器=self.定位器,
+            yolo检测器=self._YOLO检测器,
+            获取检测区域=self._获取检测区域函数,
+            每度像素=当前每度像素(),
+            停止事件=self.停止事件,
+            日志函数=self.日志函数,
+        )
+        try:
+            return 执行器.执行动作列表(动作列表)
+        except InterruptedError as exc:
+            raise 紧急停止异常(str(exc)) from exc
 
     def _更新视角(self, 鼠标像素: int | None) -> None:
         角度差 = float(鼠标像素 or 0) / 当前每度像素()
@@ -1778,6 +1857,12 @@ class Win32执行器:
     def 停止(self) -> None:
         self._连续视角控制器.停止()
         self._停止前进()
+        if self._YOLO检测器 is not None:
+            try:
+                self._YOLO检测器.释放资源()
+            except Exception:
+                pass
+            self._YOLO检测器 = None
 
 
 def 格式化识别状态文本(
@@ -1868,7 +1953,7 @@ def 启动巡航界面() -> None:
     from tkinter import filedialog, messagebox, ttk
 
     root = tk.Tk()
-    root.title("巡航启动器 · 004（角度可选）")
+    root.title("巡航启动器 · 005（角度可选）")
     root.geometry("900x800")
     root.minsize(780, 680)
 

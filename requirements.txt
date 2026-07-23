@@ -1,5 +1,7 @@
-numpy>=1.24
+numpy>=1.24,<2.0
 opencv-python>=4.8
 Pillow>=9.0
 pywin32>=306
 mss>=9.0
+onnxruntime-directml>=1.16
+pytest>=7.0

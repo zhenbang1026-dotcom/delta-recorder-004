@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-三角洲录制器004 · 合并主界面
+三角洲录制器005 · 合并主界面
 
 仅本文件为新增入口 UI，不修改旧模块源码。
 通过 import 调用：
@@ -20,6 +20,7 @@ import json
 import math
 import os
 import queue
+import shutil
 import sys
 import threading
 import tkinter as tk
@@ -34,11 +35,15 @@ if str(_ROOT) not in sys.path:
 
 import cv2
 import numpy as np
+import win32api
+import win32gui
 from PIL import Image, ImageTk
 
 import A记录坐标和角度版本 as 识别模块
 import 自动录制坐标工具 as 录制模块
 import 巡航脚本 as 巡航模块
+from 动作编辑器 import 动作列表窗口, 路线编辑窗口
+from 路线动作 import 路线动作, 路线点, 写入路线文件
 
 # ---------------------------------------------------------------------------
 # 路径
@@ -76,6 +81,7 @@ def _list_route_files() -> List[Path]:
         if not folder.is_dir():
             continue
         files.extend(sorted(folder.glob("*.txt")))
+        files.extend(sorted(folder.glob("*.jsonl")))
     # 去重（按绝对路径）
     seen = set()
     out: List[Path] = []
@@ -87,11 +93,26 @@ def _list_route_files() -> List[Path]:
     return out
 
 
+def 构建动作锚点(state, actions) -> 路线点:
+    return 路线点(state.x, state.y, state.angle, True, tuple(actions))
+
+
+def _生成录制路线路径(folder: Path) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    timestamp = 录制模块.生成时间戳()
+    path = folder / f"自动录制路线_{timestamp}.jsonl"
+    index = 1
+    while path.exists():
+        path = folder / f"自动录制路线_{timestamp}_{index}.jsonl"
+        index += 1
+    return path
+
+
 class 合并主界面:
     def __init__(self) -> None:
         _ensure_dirs()
         self.root = tk.Tk()
-        self.root.title("三角洲录制器004 · 录制 / 回放")
+        self.root.title("三角洲录制器005 · 录制 / 回放 / 路线动作")
         self.root.geometry("1100x820")
         self.root.minsize(920, 700)
 
@@ -104,7 +125,12 @@ class 合并主界面:
 
         self.detecting = False
         self.recording = False
+        self.recording_paused = False
         self.cruising = False
+        self._recorded_route_points: list[路线点] = []
+        self._q_down = False
+        self._action_window = None
+        self._previous_foreground_hwnd = 0
         self._detect_stop = threading.Event()
         self._cruise_stop = threading.Event()
         self._detect_thread: Optional[threading.Thread] = None
@@ -136,6 +162,7 @@ class 合并主界面:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(80, self._drain_queue)
         self.root.after(100, self._esc_poll)
+        self.root.after(50, self._q_poll)
 
     # ------------------------------------------------------------------ init
     def _map_path_for_cv2(self) -> str:
@@ -199,12 +226,12 @@ class 合并主界面:
         top.pack(fill="x")
         ttk.Label(
             top,
-            text="三角洲录制器004",
+            text="三角洲录制器005",
             font=("Microsoft YaHei", 14, "bold"),
         ).pack(side="left")
         ttk.Label(
             top,
-            text="  录制 · 回放 · 角度可选  |  旧代码未改，仅本入口",
+            text="  录制 · 回放 · Q 动作菜单 · YOLO 物资交互",
             foreground="#666666",
         ).pack(side="left")
 
@@ -226,7 +253,7 @@ class 合并主界面:
         )
 
         # 识别 / 录制
-        rec = ttk.LabelFrame(self.root, text="识别与录制", padding=8)
+        rec = ttk.LabelFrame(self.root, text="识别与录制（录制中按 Q 暂停并添加动作）", padding=8)
         rec.pack(fill="x", padx=12, pady=4)
         btns = ttk.Frame(rec)
         btns.pack(fill="x")
@@ -263,6 +290,9 @@ class 合并主界面:
             side="left", padx=2
         )
         ttk.Button(r1, text="浏览…", command=self._browse_route, width=8).pack(
+            side="left", padx=2
+        )
+        ttk.Button(r1, text="编辑动作", command=self._edit_selected_route, width=9).pack(
             side="left", padx=2
         )
         r2 = ttk.Frame(cruise)
@@ -494,8 +524,10 @@ class 合并主界面:
         if self.recording:
             return
         self.recording = True
+        self.recording_paused = False
         self._last_saved = None
         self.录制器.清空()
+        self._recorded_route_points.clear()
         self.录制器.日志函数 = self._log_fn
         self._refresh_points_text()
         self.btn_rec_start.config(state="disabled")
@@ -510,32 +542,38 @@ class 合并主界面:
         if not self.recording:
             return
         self.recording = False
+        self.recording_paused = False
         self.btn_rec_start.config(state="normal" if self.detecting else "disabled")
         self.btn_rec_stop.config(state="disabled")
-        if not self.录制器.记录列表:
+        if not self._recorded_route_points:
             self._last_saved = None
             self.status_var.set("本次无记录，未保存")
             录制模块.写日志(self._log_fn, "event=record_stop", 结果="无记录")
             return
-        # 保存到 录制结果 与 routes（便于回放列表）
-        path = 录制模块.写入录制文件(self.录制器.记录列表, 输出目录=RECORD_DIR)
         try:
+            path = _生成录制路线路径(RECORD_DIR)
+            写入路线文件(path, self._recorded_route_points)
             ROUTES_DIR.mkdir(parents=True, exist_ok=True)
             dest = ROUTES_DIR / path.name
-            dest.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-        except Exception:
-            dest = path
+            if dest.resolve() != path.resolve():
+                shutil.copy2(path, dest)
+        except (OSError, ValueError) as exc:
+            self._last_saved = None
+            messagebox.showerror("保存失败", str(exc))
+            self.status_var.set(f"保存失败: {exc}")
+            录制模块.写日志(self._log_fn, "event=record_stop", 结果="保存失败", 错误=str(exc))
+            return
         self._last_saved = dest
         self.route_var.set(str(dest))
         self._refresh_route_list(select=str(dest))
         self.status_var.set(f"已保存: {dest}")
-        self.record_count_var.set(f"录制点数: {len(self.录制器.记录列表)}")
+        self.record_count_var.set(f"录制点数: {len(self._recorded_route_points)}")
         录制模块.写日志(
             self._log_fn,
             "event=record_stop",
             结果="已保存",
             文件=str(dest),
-            点数=len(self.录制器.记录列表),
+            点数=len(self._recorded_route_points),
         )
 
     def clear_record(self) -> None:
@@ -543,6 +581,8 @@ class 合并主界面:
             self.status_var.set("请先停止录制")
             return
         self.录制器.清空()
+        self._recorded_route_points.clear()
+        self.recording_paused = False
         self._last_saved = None
         self._refresh_points_text()
         self.record_count_var.set("录制点数: 0")
@@ -684,11 +724,29 @@ class 合并主界面:
         path = filedialog.askopenfilename(
             title="选择路线文件",
             initialdir=str(ROUTES_DIR if ROUTES_DIR.is_dir() else ROOT),
-            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+            filetypes=[("路线文件", "*.jsonl *.txt"), ("005 JSONL 路线", "*.jsonl"), ("旧 TXT 路线", "*.txt")],
         )
         if path:
             self.route_var.set(path)
             self._refresh_route_list(select=path)
+
+    def _edit_selected_route(self) -> None:
+        if self.recording or self.cruising:
+            messagebox.showinfo("提示", "请先停止录制或回放")
+            return
+        source = self.route_var.get().strip()
+        if not source:
+            messagebox.showerror("打开失败", "请先选择路线文件")
+            return
+        try:
+            路线编辑窗口(self.root, source, 保存回调=self._on_route_edited)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("打开失败", str(exc))
+
+    def _on_route_edited(self, path: Path) -> None:
+        self.route_var.set(str(path))
+        self._refresh_route_list(select=str(path))
+        self.status_var.set(f"路线动作已保存: {path}")
 
     # ------------------------------------------------------------------ queue / preview
     def _drain_queue(self) -> None:
@@ -742,10 +800,11 @@ class 合并主界面:
             f"坐标: ({state.x}, {state.y}) | 角度: {state.angle:.2f} | "
             f"地图: {state.map_method}"
         )
-        if self.recording and self.录制器.尝试记录(state.x, state.y):
+        if self.recording and not self.recording_paused and self.录制器.尝试记录(state.x, state.y):
+            self._recorded_route_points.append(路线点(state.x, state.y, state.angle, True))
             self.points_text.insert("end", 录制模块.格式化坐标行(state.x, state.y) + "\n")
             self.points_text.see("end")
-            self.record_count_var.set(f"录制点数: {len(self.录制器.记录列表)}")
+            self.record_count_var.set(f"录制点数: {len(self._recorded_route_points)}")
         self._draw_preview(state)
 
     def _draw_preview(self, state: Optional[识别模块.识别状态]) -> None:
@@ -770,11 +829,12 @@ class 合并主界面:
 
     def _refresh_points_text(self) -> None:
         self.points_text.delete("1.0", "end")
-        if self.录制器.记录列表:
+        if self._recorded_route_points:
             self.points_text.insert(
                 "1.0",
                 "\n".join(
-                    录制模块.格式化坐标行(x, y) for x, y in self.录制器.记录列表
+                    f"{点.x},{点.y}" + (f"  [动作 {len(点.actions)} 个]" if 点.actions else "")
+                    for 点 in self._recorded_route_points
                 )
                 + "\n",
             )
@@ -798,6 +858,75 @@ class 合并主界面:
             except Exception:
                 pass
         self.root.after(50, self._esc_poll)
+
+    def _q_poll(self) -> None:
+        try:
+            down = bool(win32api.GetAsyncKeyState(ord("Q")) & 0x8000)
+        except Exception:
+            down = False
+        if down and not self._q_down and self.recording and not self.recording_paused:
+            self._open_q_action_menu()
+        self._q_down = down
+        self.root.after(50, self._q_poll)
+
+    def _open_q_action_menu(self) -> None:
+        snapshot = self.current_state
+        if snapshot is None:
+            self.status_var.set("暂时没有可用坐标/视角，无法添加动作")
+            return
+        self.recording_paused = True
+        try:
+            self._previous_foreground_hwnd = int(win32gui.GetForegroundWindow() or 0)
+        except Exception:
+            self._previous_foreground_hwnd = 0
+        self.root.deiconify()
+        self.root.lift()
+        try:
+            self.root.attributes("-topmost", True)
+            self.root.after(200, lambda: self.root.attributes("-topmost", False))
+        except tk.TclError:
+            pass
+        self.status_var.set("录制已暂停：请添加动作，完成或取消后继续录制")
+        self._action_window = 动作列表窗口(
+            self.root,
+            获取当前角度=lambda: float(getattr(self.current_state, "angle", snapshot.angle)),
+            完成回调=lambda actions: self._save_q_actions(snapshot, actions),
+            取消回调=self._close_q_action_menu,
+            title=f"Q 动作菜单 · 锚点 ({snapshot.x}, {snapshot.y})",
+        )
+
+    def _save_q_actions(self, snapshot, actions: tuple[路线动作, ...]) -> None:
+        if actions:
+            self._recorded_route_points.append(构建动作锚点(snapshot, actions))
+            self._refresh_points_text()
+            self.record_count_var.set(f"录制点数: {len(self._recorded_route_points)}")
+            录制模块.写日志(
+                self._log_fn,
+                "event=record_actions",
+                坐标=f"{snapshot.x},{snapshot.y}",
+                角度=f"{snapshot.angle:.2f}",
+                动作数=len(actions),
+            )
+        self._close_q_action_menu()
+
+    def _close_q_action_menu(self) -> None:
+        self._action_window = None
+        self.recording_paused = False
+        if self.recording:
+            self.status_var.set(f"录制继续（已记录 {len(self._recorded_route_points)} 个路线点）")
+            self.root.iconify()
+            self.root.after(80, self._restore_previous_foreground)
+
+    def _restore_previous_foreground(self) -> None:
+        hwnd = self._previous_foreground_hwnd
+        self._previous_foreground_hwnd = 0
+        if not hwnd:
+            return
+        try:
+            if win32gui.IsWindow(hwnd):
+                win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
 
     def _on_close(self) -> None:
         try:

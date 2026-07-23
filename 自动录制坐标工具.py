@@ -203,7 +203,7 @@ def 绘制轨迹预览(
 class 自动录制坐标应用:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("自动录制坐标工具 · 004（角度可选）")
+        self.root.title("自动录制坐标工具 · 005（角度可选）")
         self.root.geometry("920x840+220+20")
         self.root.minsize(780, 680)
 

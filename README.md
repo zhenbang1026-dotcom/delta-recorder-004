@@ -1,10 +1,24 @@
-# 三角洲录制器004
+# 三角洲录制器005
 
-从 `changhe/services/navigation/legacy_delta` **完整复制** 后的独立优化版。
+从 `三角洲录制器004` **完整复制** 后的独立动作路线分支。
 
 > **旧项目代码未修改。** 所有改动只在本目录。
 
-## 相对旧版做了什么（仅 004）
+## 相对 004 增加的功能
+
+| 功能 | 说明 |
+|------|------|
+| **Q 动作菜单** | 录制中按 Q 暂停坐标采样；完成/取消后恢复录制和游戏焦点，可连续添加多个动作 |
+| **键盘动作** | 单键或 `ctrl+shift+f` 组合键，单击/长按，持续时间单位为毫秒 |
+| **等待与注释** | 毫秒等待、中文注释写入 JSONL 和日志 |
+| **视角动作** | 记录水平视角，回放时最多 5 次恢复，误差不超过 3° |
+| **低头/抬头** | 分步平滑 Y 位移，每步 X 在可配置范围内随机摆动，最后自动补偿 X |
+| **YOLO 交互** | `best.onnx` 检测区域固定为 `504,358,952,614`；DirectML 优先、CPU 自动回退；识别失败跳过动作 |
+| **路线编辑** | JSONL 坐标只读，动作可增删改、上下移动；旧 TXT 编辑时另存 JSONL，不覆盖原文件 |
+
+普通路线不加载 YOLO 模型，低配置电脑（包括 GTX 750）会自动使用 CPU 推理；高配置电脑可使用 DirectML。
+
+## 相对旧版保留的功能
 
 | 优化 | 说明 |
 |------|------|
@@ -37,16 +51,38 @@ Legacy 和 TEXT 均使用 8ms 连续视角控制：
 
 ## 运行
 
+## 安装与 PyCharm
+
 ```powershell
-cd "D:\Azhuomian\GitHub\三角洲项目相关文件\三角洲录制器004"
-python -m venv .venv
-.\.venv\Scripts\pip install -r requirements.txt
-# 推荐：合并主界面（录制 + 回放）
-.\.venv\Scripts\python 主界面.py
+cd "D:\Azhuomian\GitHub\三角洲项目相关文件\三角洲录制器005"
+setup_env.bat
+```
+
+PyCharm 中选择 `Settings → Project → Python Interpreter → Add Interpreter → Existing`，解释器路径为：
+
+`D:\Azhuomian\GitHub\三角洲项目相关文件\三角洲录制器005\.venv\Scripts\python.exe`
+
+也可在 PyCharm Terminal 执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+启动主界面：
+
+```powershell
+.\.venv\Scripts\python.exe 主界面.py
+# 未激活虚拟环境时的兼容写法：python 主界面.py
 # 或双击 start.bat
 ```
 
-也可单独跑旧入口（未改逻辑）：
+## 路线文件与动作
+
+005 新录制路线保存在 `录制结果/` 和 `routes/`，扩展名为 `.jsonl`；每个路线点可携带动作列表。旧 `.txt` 仍可直接回放。选中旧 TXT 点击“编辑动作”并保存时，会在同目录生成同名 `.jsonl`，原 TXT 保留。
+
+动作按列表顺序执行。YOLO 动作默认首次 F 500ms、首次等待 300ms、循环 F 50ms；W 持续时间、循环 F 次数和间隔均可在 Q 菜单修改，W 时长不足时不允许保存。
+
+## 运行旧兼容入口
 
 ```powershell
 .\.venv\Scripts\python 巡航脚本.py
@@ -60,8 +96,10 @@ python -m venv .venv
 | 功能 | 说明 |
 |------|------|
 | 开始/停止识别 | 实时坐标+角度 |
-| 开始/停止录制 | 防跳变抽稀，保存到 `录制结果/` 与 `routes/` |
-| 路线列表 | 自动汇总 `routes/` + `录制结果/` |
+| 开始/停止录制 | 防跳变抽稀，保存 JSONL 到 `录制结果/` 与 `routes/` |
+| 路线列表 | 自动汇总 TXT/JSONL 的 `routes/` + `录制结果/` |
+| Q 动作菜单 | 录制中暂停并编辑动作；保存/取消均从当前位置继续 |
+| 路线动作编辑 | “编辑动作”打开已保存路线；坐标只读，旧 TXT 另存 JSONL |
 | 开始/停止回放 | 调用旧 `巡航()`，Esc 紧急停止 |
 | 角度模式 | Legacy 丝滑版 / 原版 TEXT（内部值 `legacy / text`）；首次启动默认 Legacy |
 | 速度倍率 | `0.5x～3.0x`，步长 `0.1x`，默认 `1.5x` |
@@ -71,7 +109,7 @@ python -m venv .venv
 
 `主界面.py` 统一编排两个模式；独立角度识别入口也提供相同选择，首次启动默认值均为 Legacy。
 
-## 与 003 的区别
+## 与 004 的区别
 
-- **004**：默认提供 Legacy 丝滑版，并保留原版 TEXT atan2+90，方便两模式对比
-- **003**：另有 text 角度模式切换等实验能力
+- **005**：在 004 基础上新增 JSONL 路线动作、Q 编辑菜单、视角/低头/YOLO 交互
+- **004**：保持旧 TXT 录制与回放，不包含上述动作扩展
