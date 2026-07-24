@@ -943,11 +943,47 @@ class 合并主界面:
             self._yolo_last_update = now
         self._queue.put(("yolo_status", {"event": event, **fields}))
 
+    def _显示YOLO窗口(self, window) -> None:
+        try:
+            window.update_idletasks()
+            hwnd = int(window.winfo_id())
+        except Exception:
+            return
+        try:
+            owner_index = getattr(win32con, "GWL_HWNDPARENT", -8)
+            win32gui.SetWindowLong(hwnd, owner_index, 0)
+        except Exception:
+            pass
+        try:
+            exstyle = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            no_activate = getattr(win32con, "WS_EX_NOACTIVATE", 0x08000000)
+            tool_window = getattr(win32con, "WS_EX_TOOLWINDOW", 0x00000080)
+            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, exstyle | no_activate | tool_window)
+            flags = (
+                win32con.SWP_NOSIZE
+                | win32con.SWP_NOACTIVATE
+                | win32con.SWP_SHOWWINDOW
+            )
+            position_x = max(0, int(window.winfo_screenwidth()) - 580)
+            win32gui.SetWindowPos(
+                hwnd, win32con.HWND_TOPMOST, position_x, 20, 0, 0, flags
+            )
+        except Exception:
+            pass
+        try:
+            if self._yolo_previous_foreground_hwnd and win32gui.IsWindow(
+                self._yolo_previous_foreground_hwnd
+            ):
+                win32gui.SetForegroundWindow(self._yolo_previous_foreground_hwnd)
+        except Exception:
+            pass
+
     def _创建YOLO窗口(self) -> None:
         if self._yolo_window is not None:
             try:
                 if self._yolo_window.winfo_exists():
                     self._yolo_window.deiconify()
+                    self._显示YOLO窗口(self._yolo_window)
                     return
             except tk.TclError:
                 pass
@@ -957,7 +993,8 @@ class 合并主界面:
             self._yolo_previous_foreground_hwnd = 0
         window = tk.Toplevel(self.root)
         window.title("YOLO 物资识别状态（不抢游戏焦点）")
-        window.geometry("560x430+20+80")
+        screen_width = int(window.winfo_screenwidth())
+        window.geometry(f"560x430+{max(0, screen_width - 580)}+20")
         window.resizable(False, False)
         window.protocol("WM_DELETE_WINDOW", self._关闭YOLO窗口)
         self._yolo_window = window
@@ -967,24 +1004,7 @@ class 合并主界面:
         self._yolo_info_label.pack(anchor="w", padx=10, pady=(0, 6))
         self._yolo_image_label = tk.Label(window, bg="#111111", width=448, height=256)
         self._yolo_image_label.pack(padx=10, pady=(0, 10))
-        try:
-            window.update_idletasks()
-            hwnd = int(window.winfo_id())
-            exstyle = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-            no_activate = getattr(win32con, "WS_EX_NOACTIVATE", 0x08000000)
-            tool_window = getattr(win32con, "WS_EX_TOOLWINDOW", 0x00000080)
-            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, exstyle | no_activate | tool_window)
-            flags = (
-                win32con.SWP_NOMOVE
-                | win32con.SWP_NOSIZE
-                | win32con.SWP_NOACTIVATE
-                | win32con.SWP_SHOWWINDOW
-            )
-            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, flags)
-            if self._yolo_previous_foreground_hwnd and win32gui.IsWindow(self._yolo_previous_foreground_hwnd):
-                win32gui.SetForegroundWindow(self._yolo_previous_foreground_hwnd)
-        except Exception:
-            pass
+        self._显示YOLO窗口(window)
 
     def _绘制YOLO预览(self, frame, detections, roi, target):
         if frame is None or self._yolo_image_label is None:

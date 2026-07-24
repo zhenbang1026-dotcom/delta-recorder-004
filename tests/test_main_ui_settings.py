@@ -354,6 +354,76 @@ def test_yolo重新开始会取消之前安排的窗口关闭() -> None:
     assert app._yolo_close_after is None
 
 
+def test_yolo窗口脱离最小化主窗口并显示在右上角(monkeypatch: pytest.MonkeyPatch) -> None:
+    window_calls = []
+    win32_calls = []
+
+    class FakeWindow:
+        def title(self, value):
+            window_calls.append(("title", value))
+
+        def geometry(self, value):
+            window_calls.append(("geometry", value))
+
+        def resizable(self, width, height):
+            window_calls.append(("resizable", width, height))
+
+        def protocol(self, name, callback):
+            window_calls.append(("protocol", name, callback))
+
+        def winfo_screenwidth(self):
+            return 1920
+
+        def update_idletasks(self):
+            window_calls.append(("update_idletasks",))
+
+        def winfo_id(self):
+            return 321
+
+    class FakeLabel:
+        def pack(self, **_kwargs):
+            return None
+
+    fake_window = FakeWindow()
+    monkeypatch.setattr(main_ui.tk, "Toplevel", lambda _root: fake_window)
+    monkeypatch.setattr(main_ui.ttk, "Label", lambda *_args, **_kwargs: FakeLabel())
+    monkeypatch.setattr(main_ui.tk, "Label", lambda *_args, **_kwargs: FakeLabel())
+    monkeypatch.setattr(main_ui.win32gui, "GetForegroundWindow", lambda: 999)
+    monkeypatch.setattr(main_ui.win32gui, "GetWindowLong", lambda _hwnd, _index: 0)
+    monkeypatch.setattr(
+        main_ui.win32gui,
+        "SetWindowLong",
+        lambda hwnd, index, value: win32_calls.append(("SetWindowLong", hwnd, index, value)),
+    )
+    monkeypatch.setattr(
+        main_ui.win32gui,
+        "SetWindowPos",
+        lambda *args: win32_calls.append(("SetWindowPos", *args)),
+    )
+    monkeypatch.setattr(main_ui.win32gui, "IsWindow", lambda _hwnd: False)
+    app = _button_app()
+    app._yolo_window = None
+    app._yolo_status_label = None
+    app._yolo_info_label = None
+    app._yolo_image_label = None
+    app._yolo_photo = None
+    app._yolo_previous_foreground_hwnd = 0
+    app._yolo_close_after = None
+    app.root.iconify()
+
+    app._创建YOLO窗口()
+
+    assert ("geometry", "560x430+1340+20") in window_calls
+    owner_index = getattr(main_ui.win32con, "GWL_HWNDPARENT", -8)
+    assert ("SetWindowLong", 321, owner_index, 0) in win32_calls
+    set_position = next(call for call in win32_calls if call[0] == "SetWindowPos")
+    assert set_position[2] == main_ui.win32con.HWND_TOPMOST
+    assert set_position[3:5] == (1340, 20)
+    assert not set_position[-1] & main_ui.win32con.SWP_NOMOVE
+    assert set_position[-1] & main_ui.win32con.SWP_NOACTIVATE
+    assert set_position[-1] & main_ui.win32con.SWP_SHOWWINDOW
+
+
 def test_yolo状态显示近距离检测模式() -> None:
     app = _button_app()
     info_text = []
