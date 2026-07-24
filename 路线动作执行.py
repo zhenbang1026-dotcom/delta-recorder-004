@@ -169,7 +169,93 @@ class 路线动作执行器:
             moved_x = 0
         return moved_y == total_y and moved_x == 0
 
-    def _执行首次按键和循环(self, p: dict[str, Any]) -> bool:
+    def _等待期间执行YOLO跟随(
+        self,
+        秒数: float,
+        跟随回调: Callable[[], None] | None,
+        *,
+        检测间隔: float = 0.05,
+    ) -> None:
+        if 跟随回调 is None or 秒数 <= 0:
+            self._等待(秒数)
+            return
+        结束时间 = self.时钟() + 秒数
+        下次检测时间 = self.时钟()
+        while True:
+            self._检查停止()
+            当前时间 = self.时钟()
+            剩余时间 = 结束时间 - 当前时间
+            if 剩余时间 <= 0:
+                return
+            if 当前时间 >= 下次检测时间:
+                跟随回调()
+                下次检测时间 = self.时钟() + 检测间隔
+                continue
+            self._等待(min(剩余时间, 下次检测时间 - 当前时间))
+
+    def _YOLO持续跟随调整(
+        self,
+        p: dict[str, Any],
+        roi: tuple[int, int, int, int],
+        屏幕中心: tuple[float, float],
+        控制器: Any,
+    ) -> None:
+        left, top, right, bottom = roi
+        center_x, center_y = 屏幕中心
+        tolerance = int(p.get("tolerance_px", 12))
+        confidence = float(p.get("confidence", 0.5))
+        try:
+            detections = self.yolo检测器.检测一次(left, top, right, bottom)
+            target = 选择综合目标(detections, (center_x, center_y), confidence)
+            frame = getattr(self.yolo检测器, "最近截图", None)
+            if frame is not None:
+                try:
+                    frame = frame.copy()
+                except Exception:
+                    frame = None
+            self._状态(
+                "inference",
+                检测数=len(detections),
+                检测结果=detections,
+                目标=target,
+                截图=frame,
+                ROI=(left, top, right, bottom),
+                中心=(center_x, center_y),
+                剩余毫秒=0,
+                执行器=getattr(self.yolo检测器, "执行器", "未知"),
+                持续跟随=True,
+            )
+            if target is None:
+                控制器.更新误差(0.0, 0.0)
+                return
+            dx = float(target["中心X"]) - center_x
+            dy = float(target["中心Y"]) - center_y
+            if abs(dx) <= tolerance and abs(dy) <= tolerance:
+                目标速度X, 目标速度Y = 控制器.更新误差(0.0, 0.0)
+            else:
+                目标速度X, 目标速度Y = 控制器.更新误差(dx, dy)
+            self._状态(
+                "adjust",
+                目标速度X=round(目标速度X, 2),
+                目标速度Y=round(目标速度Y, 2),
+                误差X=round(dx, 2),
+                误差Y=round(dy, 2),
+                持续跟随=True,
+            )
+        except Exception as exc:
+            try:
+                控制器.更新误差(0.0, 0.0)
+            except Exception:
+                pass
+            self._日志("yolo_follow_failed", 错误=str(exc))
+            self._状态("follow_failed", 错误=str(exc))
+
+    def _执行首次按键和循环(
+        self,
+        p: dict[str, Any],
+        *,
+        持续YOLO调整: Callable[[], None] | None = None,
+    ) -> bool:
         f_key = str(p.get("interaction_key", "f"))
         w_key = str(p.get("forward_key", "w"))
         pressed_w = False
@@ -198,13 +284,22 @@ class 路线动作执行器:
                 self._日志("yolo_key_down", 阶段="repeat_f", 按键=f_key, 次数=index + 1)
                 self.输入模块.键盘按下(f_key)
                 try:
-                    self._等待(repeat_ms / 1000)
+                    self._等待期间执行YOLO跟随(
+                        repeat_ms / 1000,
+                        持续YOLO调整,
+                    )
                 finally:
                     self.输入模块.键盘弹起(f_key)
                     self._日志("yolo_key_up", 阶段="repeat_f", 按键=f_key, 次数=index + 1)
                 if index + 1 < int(p["f_count"]):
-                    self._等待(max(0, interval_ms / 1000 - (self.时钟() - cycle_start)))
-            self._等待(max(0, int(p["w_duration_ms"]) / 1000 - (self.时钟() - w_start)))
+                    self._等待期间执行YOLO跟随(
+                        max(0, interval_ms / 1000 - (self.时钟() - cycle_start)),
+                        持续YOLO调整,
+                    )
+            self._等待期间执行YOLO跟随(
+                max(0, int(p["w_duration_ms"]) / 1000 - (self.时钟() - w_start)),
+                持续YOLO调整,
+            )
             return True
         finally:
             if pressed_w:
@@ -279,7 +374,23 @@ class 路线动作执行器:
                     self._状态("aligned", 误差X=round(dx, 2), 误差Y=round(dy, 2))
                     对准控制器.停止()
                     对准控制器 = None
-                    成功 = self._执行首次按键和循环(p)
+                    跟随控制器 = self.YOLO对准控制器工厂(
+                        self.输入模块,
+                        对准容差=tolerance,
+                        时钟=self.时钟,
+                    )
+                    try:
+                        成功 = self._执行首次按键和循环(
+                            p,
+                            持续YOLO调整=lambda: self._YOLO持续跟随调整(
+                                p,
+                                (left, top, right, bottom),
+                                (center_x, center_y),
+                                跟随控制器,
+                            ),
+                        )
+                    finally:
+                        跟随控制器.停止()
                     return 成功
                 目标速度X, 目标速度Y = 对准控制器.更新误差(dx, dy)
                 self._状态(

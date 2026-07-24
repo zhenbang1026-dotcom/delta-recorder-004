@@ -312,3 +312,100 @@ def test_yolo_stops_smooth_controller_when_detection_raises() -> None:
     with pytest.raises(RuntimeError, match="检测失败"):
         runner.执行动作(_YOLO动作())
     assert 记录[-1] == ("aim_stop",)
+
+
+def test_yolo_keeps_adjusting_while_w_is_held() -> None:
+    记录 = []
+    控制器列表 = []
+
+    class 跟随输入(假输入):
+        def 键盘按下(self, key):
+            记录.append(("down", key))
+            super().键盘按下(key)
+
+    class 跟随控制器(假YOLO对准控制器):
+        pass
+
+    def 创建控制器(input_module, **kwargs):
+        控制器 = 跟随控制器(input_module, 记录, **kwargs)
+        控制器列表.append(控制器)
+        return 控制器
+
+    targets = iter(
+        [
+            [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}],
+            [{"中心X": 130, "中心Y": 90, "置信度": 0.9, "类别名称": "医疗包"}],
+        ]
+    )
+    now = [0.0]
+    输入 = 跟随输入()
+    runner = 路线动作执行器(
+        输入,
+        yolo检测器=SimpleNamespace(检测一次=lambda *_args: next(targets)),
+        获取检测区域=lambda: (0, 0, 200, 200, 100, 100),
+        YOLO对准控制器工厂=创建控制器,
+        时钟=lambda: now[0],
+        睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+    action = 路线动作(
+        "yolo_interact",
+        {
+            "timeout_ms": 100,
+            "tolerance_px": 12,
+            "initial_f_ms": 1,
+            "initial_wait_ms": 0,
+            "repeat_f_ms": 1,
+            "w_duration_ms": 80,
+            "f_count": 1,
+            "f_interval_ms": 1,
+        },
+    )
+
+    assert runner.执行动作(action)
+    assert len(控制器列表) == 2
+    assert ("aim", 30.0, -10.0) in 记录
+    assert 记录.index(("down", "w")) < 记录.index(("aim", 30.0, -10.0))
+    assert 记录[-1] == ("aim_stop",)
+
+
+def test_yolo_follow_detection_failure_does_not_abort_w_action() -> None:
+    记录 = []
+    检测次数 = [0]
+    now = [0.0]
+
+    def 检测一次(*_args):
+        检测次数[0] += 1
+        if 检测次数[0] == 1:
+            return [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}]
+        raise RuntimeError("跟随检测失败")
+
+    日志 = []
+    runner = 路线动作执行器(
+        假输入(),
+        yolo检测器=SimpleNamespace(检测一次=检测一次),
+        获取检测区域=lambda: (0, 0, 200, 200, 100, 100),
+        YOLO对准控制器工厂=lambda input_module, **kwargs: 假YOLO对准控制器(
+            input_module, 记录, **kwargs
+        ),
+        日志函数=lambda event, **fields: 日志.append((event, fields)),
+        时钟=lambda: now[0],
+        睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+    action = 路线动作(
+        "yolo_interact",
+        {
+            "timeout_ms": 100,
+            "tolerance_px": 12,
+            "initial_f_ms": 1,
+            "initial_wait_ms": 0,
+            "repeat_f_ms": 1,
+            "w_duration_ms": 80,
+            "f_count": 1,
+            "f_interval_ms": 1,
+        },
+    )
+
+    assert runner.执行动作(action)
+    assert any(event == "yolo_follow_failed" for event, _fields in 日志)
+    assert ("down", "w") in runner.输入模块.calls
+    assert ("up", "w") in runner.输入模块.calls
