@@ -1727,6 +1727,7 @@ class Win32执行器:
         YOLO检测器工厂=None,
         持续YOLO服务工厂=YOLO持续对准服务,
         获取检测区域函数=None,
+        获取扩大检测区域函数=None,
         YOLO状态函数=None,
         游戏窗口句柄: int | None = None,
     ):
@@ -1744,6 +1745,7 @@ class Win32执行器:
         self._YOLO检测器工厂 = YOLO检测器工厂
         self._持续YOLO服务工厂 = 持续YOLO服务工厂
         self._获取检测区域函数 = 获取检测区域函数
+        self._获取扩大检测区域函数 = 获取扩大检测区域函数
         self.YOLO状态函数 = YOLO状态函数
         self.游戏窗口句柄 = int(游戏窗口句柄 or 0)
         self._YOLO检测器 = None
@@ -1757,13 +1759,19 @@ class Win32执行器:
             return
         try:
             if self._YOLO检测器工厂 is None or self._获取检测区域函数 is None:
-                from YOLO物资检测 import 物资检测器, 获取物资检测区域屏幕坐标
+                from YOLO物资检测 import (
+                    物资检测器,
+                    获取扩大物资检测区域屏幕坐标,
+                    获取物资检测区域屏幕坐标,
+                )
 
                 if self._YOLO检测器工厂 is None:
                     模型路径 = Path(__file__).resolve().parent / "best.onnx"
                     self._YOLO检测器工厂 = lambda: 物资检测器(模型路径, 日志函数=self.日志函数)
                 if self._获取检测区域函数 is None:
                     self._获取检测区域函数 = 获取物资检测区域屏幕坐标
+                if self._获取扩大检测区域函数 is None:
+                    self._获取扩大检测区域函数 = 获取扩大物资检测区域屏幕坐标
             self._YOLO检测器 = self._YOLO检测器工厂()
         except Exception as exc:
             self._日志("event=yolo_load_failed", 错误=str(exc))
@@ -1780,6 +1788,7 @@ class Win32执行器:
             停止事件=self.停止事件,
             日志函数=self.日志函数,
             状态函数=self.YOLO状态函数,
+            获取扩大检测区域=self._获取扩大检测区域函数,
         )
 
     def 执行路线动作(self, actions) -> list[bool]:

@@ -61,6 +61,33 @@ def 获取物资检测区域屏幕坐标() -> tuple[int, int, int, int, float, f
     )
 
 
+def 获取扩大物资检测区域屏幕坐标() -> tuple[int, int, int, int, float, float]:
+    """返回游戏客户区中央 80% 的屏幕坐标。"""
+    import win32gui
+
+    hwnd = 查找游戏窗口()
+    origin_x, origin_y = win32gui.ClientToScreen(hwnd, (0, 0))
+    client_left, client_top, client_right, client_bottom = win32gui.GetClientRect(hwnd)
+    client_width = int(client_right - client_left)
+    client_height = int(client_bottom - client_top)
+    if client_width <= 0 or client_height <= 0:
+        raise RuntimeError("游戏窗口客户区尺寸无效")
+    margin_x = int(round(client_width * 0.1))
+    margin_y = int(round(client_height * 0.1))
+    screen_left = int(origin_x + client_left + margin_x)
+    screen_top = int(origin_y + client_top + margin_y)
+    screen_right = int(origin_x + client_right - margin_x)
+    screen_bottom = int(origin_y + client_bottom - margin_y)
+    return (
+        screen_left,
+        screen_top,
+        screen_right,
+        screen_bottom,
+        (screen_left + screen_right) / 2,
+        (screen_top + screen_bottom) / 2,
+    )
+
+
 class 物资检测器:
     def __init__(
         self,

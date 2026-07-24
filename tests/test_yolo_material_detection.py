@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import numpy as np
 
 from YOLO物资动作 import (
@@ -8,10 +11,22 @@ from YOLO物资动作 import (
     选择综合目标,
     还原检测框到原图,
 )
+from YOLO物资检测 import 获取扩大物资检测区域屏幕坐标
 
 
 def test_material_roi_matches_tested_best_model_range() -> None:
     assert 物资检测区域客户区 == (504, 358, 952, 614)
+
+
+def test_expanded_material_roi_is_center_80_percent_of_game_client(monkeypatch) -> None:
+    fake_win32gui = SimpleNamespace(
+        FindWindow=lambda *_args: 123,
+        ClientToScreen=lambda _hwnd, _point: (100, 200),
+        GetClientRect=lambda _hwnd: (0, 0, 1000, 800),
+    )
+    monkeypatch.setitem(sys.modules, "win32gui", fake_win32gui)
+
+    assert 获取扩大物资检测区域屏幕坐标() == (200, 280, 1000, 920, 600.0, 600.0)
 
 
 def test_letterbox_keeps_aspect_ratio_and_restores_box() -> None:

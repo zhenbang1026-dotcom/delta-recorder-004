@@ -19,6 +19,7 @@ class YOLO持续对准服务:
         日志函数: Callable[..., Any] | None = None,
         状态函数: Callable[..., Any] | None = None,
         YOLO对准控制器工厂: Callable[..., Any] = YOLO连续对准控制器,
+        获取扩大检测区域: Callable[[], tuple[int, int, int, int, float, float]] | None = None,
         检测间隔秒数: float = 0.05,
         时钟: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -29,6 +30,7 @@ class YOLO持续对准服务:
         self.日志函数 = 日志函数
         self.状态函数 = 状态函数
         self.YOLO对准控制器工厂 = YOLO对准控制器工厂
+        self.获取扩大检测区域 = 获取扩大检测区域
         self.检测间隔秒数 = max(0.0, float(检测间隔秒数))
         self.时钟 = 时钟
         self._线程: threading.Thread | None = None
@@ -109,10 +111,31 @@ class YOLO持续对准服务:
         confidence = float(参数.get("confidence", 0.5))
         tolerance = int(参数.get("tolerance_px", 12))
         target_y_offset = int(参数.get("target_y_offset_px", 0))
+        未命中开始时间: float | None = None
+        下次扩大搜索时间 = 0.0
+        正在扩大跟踪 = False
         try:
             while not 本次停止事件.is_set() and not self._全局已停止():
                 try:
-                    left, top, right, bottom, center_x, center_y = self.获取检测区域()
+                    当前时间 = self.时钟()
+                    局部区域 = self.获取检测区域()
+                    使用扩大区域 = bool(
+                        self.获取扩大检测区域 is not None
+                        and (
+                            正在扩大跟踪
+                            or (
+                                未命中开始时间 is not None
+                                and 当前时间 - 未命中开始时间 >= 1.0
+                                and 当前时间 >= 下次扩大搜索时间
+                            )
+                        )
+                    )
+                    if 使用扩大区域:
+                        left, top, right, bottom, center_x, center_y = self.获取扩大检测区域()
+                        if not 正在扩大跟踪:
+                            下次扩大搜索时间 = 当前时间 + 0.5
+                    else:
+                        left, top, right, bottom, center_x, center_y = 局部区域
                     detections = self.yolo检测器.检测一次(left, top, right, bottom)
                     if 本次停止事件.is_set() or self._全局已停止():
                         break
@@ -134,12 +157,28 @@ class YOLO持续对准服务:
                         剩余毫秒=0,
                         执行器=getattr(self.yolo检测器, "执行器", "未知"),
                         持续跟随=True,
+                        搜索范围="扩大" if 使用扩大区域 else "局部",
                     )
                     if target is None:
                         控制器.更新误差(0.0, 0.0)
+                        if 未命中开始时间 is None:
+                            未命中开始时间 = self.时钟()
+                        if 使用扩大区域:
+                            正在扩大跟踪 = False
                     else:
                         dx = float(target["中心X"]) - center_x
                         dy = float(target["中心Y"]) + target_y_offset - center_y
+                        target_x = float(target["中心X"])
+                        target_y = float(target["中心Y"])
+                        if 使用扩大区域 and not (
+                            局部区域[0] <= target_x <= 局部区域[2]
+                            and 局部区域[1] <= target_y <= 局部区域[3]
+                        ):
+                            正在扩大跟踪 = True
+                        else:
+                            正在扩大跟踪 = False
+                            未命中开始时间 = None
+                            下次扩大搜索时间 = 0.0
                         if abs(dx) <= tolerance and abs(dy) <= tolerance:
                             目标速度X, 目标速度Y = 控制器.更新误差(0.0, 0.0)
                         else:
@@ -151,6 +190,7 @@ class YOLO持续对准服务:
                             误差X=round(dx, 2),
                             误差Y=round(dy, 2),
                             持续跟随=True,
+                            搜索范围="扩大" if 使用扩大区域 else "局部",
                         )
                 except Exception as exc:
                     try:
