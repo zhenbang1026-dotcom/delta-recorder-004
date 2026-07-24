@@ -88,6 +88,61 @@ def 获取扩大物资检测区域屏幕坐标() -> tuple[int, int, int, int, fl
     )
 
 
+def 创建近距离缩放画面(
+    frame_bgr: np.ndarray,
+    缩放比例: float = 0.55,
+) -> tuple[np.ndarray, tuple[float, float, int, int]]:
+    """缩小当前画面并居中补灰边，让近距离大目标回到模型熟悉的尺度。"""
+    if frame_bgr.ndim != 3 or frame_bgr.shape[2] != 3:
+        raise ValueError("近距离检测画面必须是 HWC 三通道")
+    ratio = float(缩放比例)
+    if not 0 < ratio < 1:
+        raise ValueError("近距离缩放比例必须在 0 到 1 之间")
+    height, width = frame_bgr.shape[:2]
+    scaled_width = max(1, int(round(width * ratio)))
+    scaled_height = max(1, int(round(height * ratio)))
+    resized = cv2.resize(frame_bgr, (scaled_width, scaled_height), interpolation=cv2.INTER_AREA)
+    canvas = np.full_like(frame_bgr, 114)
+    pad_x = (width - scaled_width) // 2
+    pad_y = (height - scaled_height) // 2
+    canvas[pad_y : pad_y + scaled_height, pad_x : pad_x + scaled_width] = resized
+    return canvas, (scaled_width / width, scaled_height / height, pad_x, pad_y)
+
+
+def 还原近距离检测结果(
+    detections: list[dict[str, Any]],
+    transform: tuple[float, float, int, int],
+    offset_x: int,
+    offset_y: int,
+    原宽: int,
+    原高: int,
+) -> list[dict[str, Any]]:
+    scale_x, scale_y, pad_x, pad_y = transform
+    result: list[dict[str, Any]] = []
+    for detection in detections:
+        x1 = max(0, min(int(round((float(detection["x1"]) - pad_x) / scale_x)), 原宽 - 1))
+        y1 = max(0, min(int(round((float(detection["y1"]) - pad_y) / scale_y)), 原高 - 1))
+        x2 = max(0, min(int(round((float(detection["x2"]) - pad_x) / scale_x)), 原宽 - 1))
+        y2 = max(0, min(int(round((float(detection["y2"]) - pad_y) / scale_y)), 原高 - 1))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        restored = dict(detection)
+        restored.update(
+            {
+                "x1": x1 + int(offset_x),
+                "y1": y1 + int(offset_y),
+                "x2": x2 + int(offset_x),
+                "y2": y2 + int(offset_y),
+                "宽度": x2 - x1,
+                "高度": y2 - y1,
+                "中心X": (x1 + x2) / 2 + int(offset_x),
+                "中心Y": (y1 + y2) / 2 + int(offset_y),
+            }
+        )
+        result.append(restored)
+    return result
+
+
 class 物资检测器:
     def __init__(
         self,
@@ -96,16 +151,22 @@ class 物资检测器:
         设备ID: int = 0,
         日志函数: Callable[..., Any] | None = None,
         ort模块: Any = None,
+        时钟: Callable[[], float] = time.monotonic,
+        近距离检测间隔秒数: float = 0.2,
     ) -> None:
         self.模型路径 = str(Path(模型路径).resolve())
         self.设备ID = int(设备ID)
         self.日志函数 = 日志函数
         self._ort = ort模块
+        self.时钟 = 时钟
+        self.近距离检测间隔秒数 = max(0.0, float(近距离检测间隔秒数))
+        self._上次近距离检测时间 = -float("inf")
         self.session = None
         self.执行器 = "未初始化"
         self._已运行时回退 = False
         self.最近截图 = None
         self.最近检测结果: list[dict[str, Any]] = []
+        self.最近检测模式 = "正常"
         self._加载模型()
 
     def _日志(self, 事件: str, **字段: Any) -> None:
@@ -239,6 +300,27 @@ class 物资检测器:
             )
         return result
 
+    def _检测画面(
+        self,
+        frame_bgr: np.ndarray,
+        *,
+        offset_x: int,
+        offset_y: int,
+        confidence_threshold: float,
+        iou_threshold: float,
+    ) -> list[dict[str, Any]]:
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        tensor, meta = letterbox_到模型输入(frame_rgb, (self.输入高度, self.输入宽度))
+        output = self._推理(tensor)
+        return self._后处理(
+            output,
+            meta,
+            offset_x=offset_x,
+            offset_y=offset_y,
+            confidence_threshold=confidence_threshold,
+            iou_threshold=iou_threshold,
+        )
+
     def 检测一次(
         self,
         left: int,
@@ -252,22 +334,40 @@ class 物资检测器:
         started = time.perf_counter()
         frame_bgr, backend = 截图模块.grab_bbox_bgr((left, top, right, bottom))
         self.最近截图 = frame_bgr.copy()
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        tensor, meta = letterbox_到模型输入(frame_rgb, (self.输入高度, self.输入宽度))
-        output = self._推理(tensor)
-        result = self._后处理(
-            output,
-            meta,
+        self.最近检测模式 = "正常"
+        result = self._检测画面(
+            frame_bgr,
             offset_x=int(left),
             offset_y=int(top),
             confidence_threshold=float(置信度阈值),
             iou_threshold=float(IOU阈值),
         )
+        当前时间 = self.时钟()
+        if not result and 当前时间 - self._上次近距离检测时间 >= self.近距离检测间隔秒数:
+            self._上次近距离检测时间 = 当前时间
+            close_frame, transform = 创建近距离缩放画面(frame_bgr)
+            close_detections = self._检测画面(
+                close_frame,
+                offset_x=0,
+                offset_y=0,
+                confidence_threshold=float(置信度阈值),
+                iou_threshold=float(IOU阈值),
+            )
+            result = 还原近距离检测结果(
+                close_detections,
+                transform,
+                int(left),
+                int(top),
+                frame_bgr.shape[1],
+                frame_bgr.shape[0],
+            )
+            self.最近检测模式 = "近距离"
         self.最近检测结果 = result
         self._日志(
             "yolo_inference",
             执行器=self.执行器,
             截图后端=backend,
+            检测模式=self.最近检测模式,
             耗时毫秒=round((time.perf_counter() - started) * 1000, 2),
             目标数=len(result),
         )

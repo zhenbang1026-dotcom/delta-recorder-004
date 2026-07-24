@@ -5,6 +5,7 @@ import json
 import queue
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -351,6 +352,27 @@ def test_yolo重新开始会取消之前安排的窗口关闭() -> None:
 
     assert ("after_cancel", "close-after") in app.root.calls
     assert app._yolo_close_after is None
+
+
+def test_yolo状态显示近距离检测模式() -> None:
+    app = _button_app()
+    info_text = []
+    app._yolo_window = object()
+    app._yolo_status_label = SimpleNamespace(configure=lambda **_kwargs: None)
+    app._yolo_info_label = SimpleNamespace(configure=lambda **kwargs: info_text.append(kwargs["text"]))
+    app._绘制YOLO预览 = lambda *_args: None
+
+    app._on_yolo_status(
+        {
+            "event": "inference",
+            "执行器": "DirectML",
+            "检测模式": "近距离",
+            "检测数": 1,
+            "目标": {"类别名称": "野外物资箱", "置信度": 0.88},
+        }
+    )
+
+    assert "检测模式：近距离" in info_text[-1]
 
 
 def testesc轮询仍可停止回放(monkeypatch: pytest.MonkeyPatch) -> None:

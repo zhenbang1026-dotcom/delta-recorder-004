@@ -156,6 +156,7 @@ class YOLO持续对准服务:
                         中心=(center_x, center_y),
                         剩余毫秒=0,
                         执行器=getattr(self.yolo检测器, "执行器", "未知"),
+                        检测模式=getattr(self.yolo检测器, "最近检测模式", "正常"),
                         持续跟随=True,
                         搜索范围="扩大" if 使用扩大区域 else "局部",
                     )

@@ -237,6 +237,7 @@ class 路线动作执行器:
                 中心=(center_x, center_y),
                 剩余毫秒=0,
                 执行器=getattr(self.yolo检测器, "执行器", "未知"),
+                检测模式=getattr(self.yolo检测器, "最近检测模式", "正常"),
                 持续跟随=True,
             )
             if target is None:
@@ -378,6 +379,7 @@ class 路线动作执行器:
                     中心=(center_x, center_y),
                     剩余毫秒=剩余毫秒,
                     执行器=getattr(self.yolo检测器, "执行器", "未知"),
+                    检测模式=getattr(self.yolo检测器, "最近检测模式", "正常"),
                 )
                 if target is None:
                     对准控制器.更新误差(0.0, 0.0)

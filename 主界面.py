@@ -1057,7 +1057,9 @@ class 合并主界面:
             target = payload.get("目标") or {}
             progress = "模式：持续检测" if persistent else f"剩余时间：{payload.get('剩余毫秒', 0)}ms"
             info = (
-                f"执行器：{payload.get('执行器', '未知')}  |  检测目标：{payload.get('检测数', 0)} 个\n"
+                f"执行器：{payload.get('执行器', '未知')}  |  "
+                f"检测模式：{payload.get('检测模式', '正常')}  |  "
+                f"检测目标：{payload.get('检测数', 0)} 个\n"
                 f"当前目标：{target.get('类别名称', '未找到')} 置信度：{float(target.get('置信度', 0)):.2f}\n"
                 f"{progress}"
             )
