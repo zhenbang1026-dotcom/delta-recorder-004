@@ -39,6 +39,69 @@ def test_combo_key_releases_in_reverse_order() -> None:
     assert inp.calls == [("down", "ctrl"), ("down", "f"), ("up", "f"), ("up", "ctrl")]
 
 
+@pytest.mark.parametrize("mode", ["click", "hold"])
+def test_key_action_repeats_after_release_with_fresh_random_duration(mode) -> None:
+    class 顺序随机数:
+        def __init__(self):
+            self.values = iter([-5, 20, 0])
+
+        def randint(self, lower, upper):
+            assert (lower, upper) == (-5, 20)
+            return next(self.values)
+
+    inp = 假输入()
+    waits = []
+    runner = 路线动作执行器(inp, 随机数=顺序随机数())
+    runner._等待 = lambda seconds: waits.append(seconds)
+    action = 路线动作(
+        "key",
+        {
+            "keys": ["w", "f"],
+            "mode": mode,
+            "duration_ms": 100,
+            "repeat_count": 3,
+            "repeat_interval_ms": 100,
+            "duration_jitter_minus_ms": 5,
+            "duration_jitter_plus_ms": 20,
+        },
+    )
+
+    assert runner.执行动作(action)
+    assert inp.calls == [
+        ("down", "w"), ("down", "f"), ("up", "f"), ("up", "w"),
+        ("down", "w"), ("down", "f"), ("up", "f"), ("up", "w"),
+        ("down", "w"), ("down", "f"), ("up", "f"), ("up", "w"),
+    ]
+    assert waits == pytest.approx([0.095, 0.1, 0.12, 0.1, 0.1])
+
+
+def test_repeated_key_action_releases_current_combo_when_stopped() -> None:
+    inp = 假输入()
+    waits = [0]
+    runner = 路线动作执行器(inp)
+
+    def wait_or_stop(_seconds):
+        waits[0] += 1
+        if waits[0] == 3:
+            raise InterruptedError("停止")
+
+    runner._等待 = wait_or_stop
+    action = 路线动作(
+        "key",
+        {
+            "keys": ["ctrl", "f"],
+            "mode": "hold",
+            "duration_ms": 100,
+            "repeat_count": 2,
+            "repeat_interval_ms": 100,
+        },
+    )
+
+    with pytest.raises(InterruptedError):
+        runner.执行动作(action)
+    assert inp.calls[-2:] == [("up", "f"), ("up", "ctrl")]
+
+
 def test_look_action_returns_x_to_origin_and_keeps_y_delta() -> None:
     inp = 假输入()
     now = [0.0]

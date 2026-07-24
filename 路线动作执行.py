@@ -95,22 +95,33 @@ class 路线动作执行器:
         keys = p.get("keys", [])
         if isinstance(keys, str):
             keys = [item.strip() for item in keys.split("+") if item.strip()]
-        mode = p.get("mode", "click")
-        duration = int(p.get("duration_ms", 50)) / 1000
-        pressed: list[str] = []
-        try:
-            for key in keys:
-                self._检查停止()
-                self.输入模块.键盘按下(key)
-                pressed.append(str(key))
-            self._等待(duration)
-            return True
-        finally:
-            for key in reversed(pressed):
-                try:
-                    self.输入模块.键盘弹起(key)
-                except Exception:
-                    pass
+        duration_ms = int(p.get("duration_ms", 50))
+        repeat_count = int(p.get("repeat_count", 1))
+        interval = int(p.get("repeat_interval_ms", 100)) / 1000
+        jitter_minus = int(p.get("duration_jitter_minus_ms", 0))
+        jitter_plus = int(p.get("duration_jitter_plus_ms", 0))
+        for index in range(repeat_count):
+            jitter = (
+                self.随机数.randint(-jitter_minus, jitter_plus)
+                if jitter_minus or jitter_plus
+                else 0
+            )
+            pressed: list[str] = []
+            try:
+                for key in keys:
+                    self._检查停止()
+                    self.输入模块.键盘按下(key)
+                    pressed.append(str(key))
+                self._等待((duration_ms + jitter) / 1000)
+            finally:
+                for key in reversed(pressed):
+                    try:
+                        self.输入模块.键盘弹起(key)
+                    except Exception:
+                        pass
+            if index + 1 < repeat_count:
+                self._等待(interval)
+        return True
 
     def _鼠标平滑移动(self, dx: int, dy: int, 间隔: float = 0.0) -> None:
         if not dx and not dy:

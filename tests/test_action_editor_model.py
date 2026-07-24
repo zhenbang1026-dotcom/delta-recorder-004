@@ -15,7 +15,40 @@ def test_key_form_builds_ordered_combo() -> None:
         "keys": ["ctrl", "shift", "f"],
         "mode": "hold",
         "duration_ms": 650,
+        "repeat_count": 1,
+        "repeat_interval_ms": 100,
+        "duration_jitter_minus_ms": 5,
+        "duration_jitter_plus_ms": 20,
     }
+
+
+def test_key_form_builds_repeat_and_duration_jitter() -> None:
+    action = 从表单创建动作(
+        "key",
+        {
+            "keys": "w+f",
+            "mode": "单击",
+            "duration_ms": "100",
+            "repeat_count": "3",
+            "repeat_interval_ms": "100",
+            "duration_jitter_minus_ms": "5",
+            "duration_jitter_plus_ms": "20",
+        },
+    )
+
+    assert action.参数["repeat_count"] == 3
+    assert action.参数["repeat_interval_ms"] == 100
+    assert action.参数["duration_jitter_minus_ms"] == 5
+    assert action.参数["duration_jitter_plus_ms"] == 20
+
+
+def test_key_form_defaults_repeat_and_duration_jitter() -> None:
+    defaults = {key: default for key, _label, default, _options in 表单字段["key"]}
+
+    assert defaults["repeat_count"] == "1"
+    assert defaults["repeat_interval_ms"] == "100"
+    assert defaults["duration_jitter_minus_ms"] == "5"
+    assert defaults["duration_jitter_plus_ms"] == "20"
 
 
 def test_chinese_comment_is_preserved() -> None:

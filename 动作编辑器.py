@@ -42,7 +42,21 @@ def 从表单创建动作(action_type: str, values: dict[str, object]) -> 路线
         )
         action = 路线动作(
             "key",
-            {"keys": keys, "mode": mode, "duration_ms": _整数(values.get("duration_ms"), "按键持续时间")},
+            {
+                "keys": keys,
+                "mode": mode,
+                "duration_ms": _整数(values.get("duration_ms"), "按键持续时间"),
+                "repeat_count": _整数(values.get("repeat_count", 1), "执行次数"),
+                "repeat_interval_ms": _整数(
+                    values.get("repeat_interval_ms", 100), "每次弹起后间隔"
+                ),
+                "duration_jitter_minus_ms": _整数(
+                    values.get("duration_jitter_minus_ms", 5), "按下时长随机减少"
+                ),
+                "duration_jitter_plus_ms": _整数(
+                    values.get("duration_jitter_plus_ms", 20), "按下时长随机增加"
+                ),
+            },
         )
     elif action_type == "wait":
         action = 路线动作("wait", {"milliseconds": _整数(values.get("milliseconds"), "等待时间")})
@@ -91,7 +105,11 @@ def 动作摘要(action: 路线动作) -> str:
     p = action.参数
     if action.类型 == "key":
         mode = "长按" if p.get("mode") == "hold" else "单击"
-        return f"按键 {'+'.join(p.get('keys', []))}，{mode} {p.get('duration_ms', 50)}ms"
+        return (
+            f"按键 {'+'.join(p.get('keys', []))}，{mode} {p.get('duration_ms', 50)}ms，"
+            f"执行 {p.get('repeat_count', 1)} 次，间隔 {p.get('repeat_interval_ms', 100)}ms，"
+            f"随机 -{p.get('duration_jitter_minus_ms', 0)}/+{p.get('duration_jitter_plus_ms', 0)}ms"
+        )
     if action.类型 == "wait":
         return f"等待 {p.get('milliseconds', 0)}ms"
     if action.类型 == "comment":
@@ -112,6 +130,10 @@ def 动作摘要(action: 路线动作) -> str:
         ("keys", "按键/组合键（用 + 分隔）", "f", None),
         ("mode", "方式", "单击", ("单击", "长按")),
         ("duration_ms", "按下时长（毫秒）", "50", None),
+        ("repeat_count", "执行次数", "1", None),
+        ("repeat_interval_ms", "每次弹起后间隔（毫秒）", "100", None),
+        ("duration_jitter_minus_ms", "按下时长随机减少（毫秒）", "5", None),
+        ("duration_jitter_plus_ms", "按下时长随机增加（毫秒）", "20", None),
     ],
     "wait": [("milliseconds", "等待时间（毫秒）", "500", None)],
     "comment": [("text", "中文注释", "", None)],

@@ -48,7 +48,15 @@ class 路线动作:
                 raise ValueError("按键动作至少需要一个按键")
             if p.get("mode", "click") not in {"click", "hold"}:
                 raise ValueError("按键动作模式必须是 click 或 hold")
-            _整数(p.get("duration_ms", 50), "按键持续时间", 最小值=1)
+            duration = _整数(p.get("duration_ms", 50), "按键持续时间", 最小值=1)
+            _整数(p.get("repeat_count", 1), "执行次数", 最小值=1)
+            _整数(p.get("repeat_interval_ms", 100), "每次弹起后间隔", 最小值=0)
+            jitter_minus = _整数(
+                p.get("duration_jitter_minus_ms", 0), "按下时长随机减少", 最小值=0
+            )
+            _整数(p.get("duration_jitter_plus_ms", 0), "按下时长随机增加", 最小值=0)
+            if jitter_minus >= duration:
+                raise ValueError("按下时长随机减少必须小于按键持续时间")
         elif self.类型 == "wait":
             _整数(p.get("milliseconds", 0), "等待时间", 最小值=0)
         elif self.类型 == "comment":

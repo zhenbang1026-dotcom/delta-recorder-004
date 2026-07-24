@@ -49,6 +49,22 @@ def test_old_txt_route_remains_readable(tmp_path: Path) -> None:
     ]
 
 
+def test_key_action_rejects_jitter_that_can_make_duration_non_positive() -> None:
+    with pytest.raises(ValueError, match="随机减少"):
+        路线动作(
+            "key",
+            {
+                "keys": ["f"],
+                "mode": "click",
+                "duration_ms": 20,
+                "repeat_count": 2,
+                "repeat_interval_ms": 100,
+                "duration_jitter_minus_ms": 20,
+                "duration_jitter_plus_ms": 5,
+            },
+        ).校验()
+
+
 def test_yolo_action_validates_w_duration_before_save() -> None:
     with pytest.raises(ValueError, match="W 持续时间"):
         路线动作(
