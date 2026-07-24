@@ -26,11 +26,13 @@ class 路线动作执行器:
         每度像素: float = 100 / 3,
         停止事件: Any = None,
         日志函数: Callable[..., Any] | None = None,
+        状态函数: Callable[..., Any] | None = None,
         睡眠函数: Callable[[float], None] = time.sleep,
         时钟: Callable[[], float] = time.monotonic,
         随机数: random.Random | None = None,
         对准增益: float = 0.65,
         最大对准步长: int = 80,
+        最大视角恢复步长: int = 1200,
     ) -> None:
         self.输入模块 = 输入模块
         self.定位器 = 定位器
@@ -39,11 +41,13 @@ class 路线动作执行器:
         self.每度像素 = float(每度像素)
         self.停止事件 = 停止事件
         self.日志函数 = 日志函数
+        self.状态函数 = 状态函数
         self.睡眠函数 = 睡眠函数
         self.时钟 = 时钟
         self.随机数 = 随机数 or random.Random()
         self.对准增益 = float(对准增益)
         self.最大对准步长 = int(最大对准步长)
+        self.最大视角恢复步长 = int(最大视角恢复步长)
 
     def _日志(self, 事件: str, **字段: Any) -> None:
         if self.日志函数 is None:
@@ -52,6 +56,19 @@ class 路线动作执行器:
             self.日志函数(事件, **字段)
         except TypeError:
             self.日志函数(f"{事件} | " + " | ".join(f"{k}={v}" for k, v in 字段.items()))
+
+    def _状态(self, 事件: str, **字段: Any) -> None:
+        if self.状态函数 is None:
+            return
+        try:
+            self.状态函数(事件, **字段)
+        except TypeError:
+            try:
+                self.状态函数({"event": 事件, **字段})
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _停止_requested(self) -> bool:
         return bool(self.停止事件 is not None and self.停止事件.is_set())
@@ -124,7 +141,7 @@ class 路线动作执行器:
             if abs(delta) <= tolerance:
                 return True
             pixels = int(round(delta * self.每度像素))
-            pixels = max(-self.最大对准步长, min(self.最大对准步长, pixels))
+            pixels = max(-self.最大视角恢复步长, min(self.最大视角恢复步长, pixels))
             self._鼠标平滑移动(pixels, 0)
             self._等待(0.05)
         return False
@@ -190,35 +207,71 @@ class 路线动作执行器:
 
     def _YOLO交互(self, action: 路线动作) -> bool:
         p = action.参数
-        if "angle" in p and self.定位器 is not None:
-            if not self.恢复视角(float(p["angle"])):
-                self._日志("yolo_view_failed", 目标角度=p["angle"])
+        timeout_ms = int(p.get("timeout_ms", 5000))
+        self._状态(
+            "start",
+            目标角度=p.get("angle"),
+            超时毫秒=timeout_ms,
+            置信度阈值=float(p.get("confidence", 0.5)),
+        )
+        成功 = False
+        try:
+            if "angle" in p and self.定位器 is not None:
+                self._状态("view", 目标角度=p["angle"])
+                if not self.恢复视角(float(p["angle"])):
+                    self._日志("yolo_view_failed", 目标角度=p["angle"])
+                    self._状态("view_failed", 目标角度=p["angle"])
+                    return False
+            if self.yolo检测器 is None or self.获取检测区域 is None:
+                self._日志("yolo_unavailable")
+                self._状态("unavailable")
                 return False
-        if self.yolo检测器 is None or self.获取检测区域 is None:
-            self._日志("yolo_unavailable")
+            left, top, right, bottom, center_x, center_y = self.获取检测区域()
+            deadline = self.时钟() + timeout_ms / 1000
+            tolerance = int(p.get("tolerance_px", 12))
+            confidence = float(p.get("confidence", 0.5))
+            while self.时钟() < deadline:
+                self._检查停止()
+                detections = self.yolo检测器.检测一次(left, top, right, bottom)
+                target = 选择综合目标(detections, (center_x, center_y), confidence)
+                剩余毫秒 = max(0, int(round((deadline - self.时钟()) * 1000)))
+                frame = getattr(self.yolo检测器, "最近截图", None)
+                if frame is not None:
+                    try:
+                        frame = frame.copy()
+                    except Exception:
+                        frame = None
+                self._状态(
+                    "inference",
+                    检测数=len(detections),
+                    检测结果=detections,
+                    目标=target,
+                    截图=frame,
+                    ROI=(left, top, right, bottom),
+                    中心=(center_x, center_y),
+                    剩余毫秒=剩余毫秒,
+                    执行器=getattr(self.yolo检测器, "执行器", "未知"),
+                )
+                if target is None:
+                    self._等待(0.05)
+                    continue
+                dx = float(target["中心X"]) - center_x
+                dy = float(target["中心Y"]) - center_y
+                if abs(dx) <= tolerance and abs(dy) <= tolerance:
+                    self._日志("yolo_aligned", 误差X=round(dx, 2), 误差Y=round(dy, 2))
+                    self._状态("aligned", 误差X=round(dx, 2), 误差Y=round(dy, 2))
+                    成功 = self._执行首次按键和循环(p)
+                    return 成功
+                move_x = int(round(max(-self.最大对准步长, min(self.最大对准步长, dx * self.对准增益))))
+                move_y = int(round(max(-self.最大对准步长, min(self.最大对准步长, dy * self.对准增益))))
+                self.输入模块.鼠标相对移动(move_x, move_y)
+                self._状态("adjust", 移动X=move_x, 移动Y=move_y, 误差X=round(dx, 2), 误差Y=round(dy, 2))
+                self._等待(0.02)
+            self._日志("yolo_timeout", 超时毫秒=timeout_ms)
+            self._状态("timeout", 超时毫秒=timeout_ms)
             return False
-        left, top, right, bottom, center_x, center_y = self.获取检测区域()
-        deadline = self.时钟() + int(p.get("timeout_ms", 5000)) / 1000
-        tolerance = int(p.get("tolerance_px", 12))
-        confidence = float(p.get("confidence", 0.5))
-        while self.时钟() < deadline:
-            self._检查停止()
-            detections = self.yolo检测器.检测一次(left, top, right, bottom)
-            target = 选择综合目标(detections, (center_x, center_y), confidence)
-            if target is None:
-                self._等待(0.05)
-                continue
-            dx = float(target["中心X"]) - center_x
-            dy = float(target["中心Y"]) - center_y
-            if abs(dx) <= tolerance and abs(dy) <= tolerance:
-                self._日志("yolo_aligned", 误差X=round(dx, 2), 误差Y=round(dy, 2))
-                return self._执行首次按键和循环(p)
-            move_x = int(round(max(-self.最大对准步长, min(self.最大对准步长, dx * self.对准增益))))
-            move_y = int(round(max(-self.最大对准步长, min(self.最大对准步长, dy * self.对准增益))))
-            self.输入模块.鼠标相对移动(move_x, move_y)
-            self._等待(0.02)
-        self._日志("yolo_timeout", 超时毫秒=p.get("timeout_ms", 5000))
-        return False
+        finally:
+            self._状态("finish", 成功=成功)
 
     def 执行动作(self, action: 路线动作) -> bool:
         action.校验()

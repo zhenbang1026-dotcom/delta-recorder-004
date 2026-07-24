@@ -23,6 +23,7 @@ import queue
 import shutil
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -36,6 +37,7 @@ if str(_ROOT) not in sys.path:
 import cv2
 import numpy as np
 import win32api
+import win32con
 import win32gui
 from PIL import Image, ImageTk
 
@@ -131,6 +133,14 @@ class 合并主界面:
         self._q_down = False
         self._action_window = None
         self._previous_foreground_hwnd = 0
+        self._yolo_window = None
+        self._yolo_status_label = None
+        self._yolo_info_label = None
+        self._yolo_image_label = None
+        self._yolo_photo = None
+        self._yolo_last_update = 0.0
+        self._yolo_previous_foreground_hwnd = 0
+        self._yolo_close_after = None
         self._detect_stop = threading.Event()
         self._cruise_stop = threading.Event()
         self._detect_thread: Optional[threading.Thread] = None
@@ -649,6 +659,7 @@ class 合并主界面:
                     定位器=定位器,
                     日志函数=log_fn,
                     停止事件=self._cruise_stop,
+                    YOLO状态函数=self._queue_yolo_status,
                 )
                 self._queue.put(("cruise_done", "寻路已结束"))
             except 巡航模块.紧急停止异常:
@@ -775,10 +786,13 @@ class 合并主界面:
                 self._restore_window()
             elif kind == "cruise_done":
                 self.status_var.set(str(payload))
+            elif kind == "yolo_status":
+                self._on_yolo_status(payload)  # type: ignore[arg-type]
             elif kind == "cruise_error":
                 messagebox.showerror("寻路失败", str(payload))
                 self.status_var.set(f"寻路失败: {payload}")
             elif kind == "cruise_stopped":
+                self._关闭YOLO窗口()
                 self.cruising = False
                 self._cruise_thread = None
                 self.btn_cruise_start.config(state="normal")
@@ -787,6 +801,157 @@ class 合并主界面:
                 self._set_angle_radios(True)
                 self._restore_window()
         self.root.after(80, self._drain_queue)
+
+    def _queue_yolo_status(self, event: str, **fields) -> None:
+        if event == "inference":
+            now = time.monotonic()
+            if now - self._yolo_last_update < 0.08:
+                return
+            self._yolo_last_update = now
+        self._queue.put(("yolo_status", {"event": event, **fields}))
+
+    def _创建YOLO窗口(self) -> None:
+        if self._yolo_window is not None:
+            try:
+                if self._yolo_window.winfo_exists():
+                    self._yolo_window.deiconify()
+                    return
+            except tk.TclError:
+                pass
+        try:
+            self._yolo_previous_foreground_hwnd = int(win32gui.GetForegroundWindow() or 0)
+        except Exception:
+            self._yolo_previous_foreground_hwnd = 0
+        window = tk.Toplevel(self.root)
+        window.title("YOLO 物资识别状态（不抢游戏焦点）")
+        window.geometry("560x430+20+80")
+        window.resizable(False, False)
+        window.protocol("WM_DELETE_WINDOW", self._关闭YOLO窗口)
+        self._yolo_window = window
+        self._yolo_status_label = ttk.Label(window, text="YOLO 准备中", font=("Microsoft YaHei", 12, "bold"))
+        self._yolo_status_label.pack(anchor="w", padx=10, pady=(8, 2))
+        self._yolo_info_label = ttk.Label(window, text="", justify="left")
+        self._yolo_info_label.pack(anchor="w", padx=10, pady=(0, 6))
+        self._yolo_image_label = tk.Label(window, bg="#111111", width=448, height=256)
+        self._yolo_image_label.pack(padx=10, pady=(0, 10))
+        try:
+            window.update_idletasks()
+            hwnd = int(window.winfo_id())
+            exstyle = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            no_activate = getattr(win32con, "WS_EX_NOACTIVATE", 0x08000000)
+            tool_window = getattr(win32con, "WS_EX_TOOLWINDOW", 0x00000080)
+            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, exstyle | no_activate | tool_window)
+            flags = (
+                win32con.SWP_NOMOVE
+                | win32con.SWP_NOSIZE
+                | win32con.SWP_NOACTIVATE
+                | win32con.SWP_SHOWWINDOW
+            )
+            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, flags)
+            if self._yolo_previous_foreground_hwnd and win32gui.IsWindow(self._yolo_previous_foreground_hwnd):
+                win32gui.SetForegroundWindow(self._yolo_previous_foreground_hwnd)
+        except Exception:
+            pass
+
+    def _绘制YOLO预览(self, frame, detections, roi, target):
+        if frame is None or self._yolo_image_label is None:
+            return
+        try:
+            image = frame.copy()
+            left, top, right, bottom = [int(value) for value in roi]
+            target_center = None if target is None else (target.get("中心X"), target.get("中心Y"))
+            for item in detections or []:
+                x1 = int(item.get("x1", left) - left)
+                y1 = int(item.get("y1", top) - top)
+                x2 = int(item.get("x2", right) - left)
+                y2 = int(item.get("y2", bottom) - top)
+                center = (item.get("中心X"), item.get("中心Y"))
+                color = (0, 255, 0) if center == target_center else (0, 140, 255)
+                cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(
+                    image,
+                    f"{item.get('类别名称', '?')} {float(item.get('置信度', 0)):.2f}",
+                    (max(0, x1), max(16, y1 - 5)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    color,
+                    1,
+                    cv2.LINE_AA,
+                )
+            self._yolo_photo = _bgr_to_photo(image, max_width=540)
+            self._yolo_image_label.configure(image=self._yolo_photo, width=0, height=0)
+        except Exception:
+            pass
+
+    def _on_yolo_status(self, payload: dict) -> None:
+        event = str(payload.get("event", ""))
+        if event == "start":
+            self._创建YOLO窗口()
+            if self._yolo_status_label is not None:
+                self._yolo_status_label.configure(text="YOLO：准备识别")
+            if self._yolo_info_label is not None:
+                self._yolo_info_label.configure(
+                    text=f"目标视角：{payload.get('目标角度', '--')}°\n"
+                    f"置信度阈值：{float(payload.get('置信度阈值', 0.5)):.2f}  |  超时：{payload.get('超时毫秒', '--')}ms"
+                )
+            return
+        if self._yolo_window is None:
+            self._创建YOLO窗口()
+        if event == "view":
+            status = f"YOLO：恢复视角到 {payload.get('目标角度', '--')}°"
+        elif event == "view_failed":
+            status = f"YOLO：视角恢复失败（{payload.get('目标角度', '--')}°），跳过识别"
+        elif event == "inference":
+            status = "YOLO：识别中"
+            target = payload.get("目标") or {}
+            info = (
+                f"执行器：{payload.get('执行器', '未知')}  |  检测目标：{payload.get('检测数', 0)} 个\n"
+                f"当前目标：{target.get('类别名称', '未找到')} 置信度：{float(target.get('置信度', 0)):.2f}\n"
+                f"剩余时间：{payload.get('剩余毫秒', 0)}ms"
+            )
+            if self._yolo_info_label is not None:
+                self._yolo_info_label.configure(text=info)
+            self._绘制YOLO预览(
+                payload.get("截图"), payload.get("检测结果", []), payload.get("ROI", (0, 0, 1, 1)), target
+            )
+        elif event == "adjust":
+            status = "YOLO：对准调整中"
+        elif event == "aligned":
+            status = f"YOLO：已对准，误差 X={payload.get('误差X', '--')} Y={payload.get('误差Y', '--')}，执行 F/W"
+        elif event == "timeout":
+            status = "YOLO：识别/对准超时，跳过动作"
+        elif event == "unavailable":
+            status = "YOLO：检测器不可用，跳过动作"
+        elif event == "finish":
+            status = "YOLO：动作完成" if payload.get("成功") else "YOLO：动作失败，已继续路线"
+            if self._yolo_window is not None:
+                self._yolo_close_after = self.root.after(1200, self._关闭YOLO窗口)
+        else:
+            status = f"YOLO：{event}"
+        if self._yolo_status_label is not None:
+            self._yolo_status_label.configure(text=status)
+        if event in {"view_failed", "timeout", "unavailable"} and self._yolo_info_label is not None:
+            self._yolo_info_label.configure(text="本次动作将跳过，巡航会继续执行后续路线点。")
+
+    def _关闭YOLO窗口(self) -> None:
+        close_after = getattr(self, "_yolo_close_after", None)
+        if close_after is not None:
+            try:
+                self.root.after_cancel(close_after)
+            except Exception:
+                pass
+            self._yolo_close_after = None
+        window = getattr(self, "_yolo_window", None)
+        self._yolo_window = None
+        self._yolo_photo = None
+        self._yolo_status_label = None
+        self._yolo_info_label = None
+        self._yolo_image_label = None
+        if window is not None:
+            try:
+                window.destroy()
+            except tk.TclError:
+                pass
 
     def _on_state(self, state: 识别模块.识别状态) -> None:
         if not self.detecting:

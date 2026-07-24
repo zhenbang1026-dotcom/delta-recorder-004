@@ -77,6 +77,8 @@ class 物资检测器:
         self.session = None
         self.执行器 = "未初始化"
         self._已运行时回退 = False
+        self.最近截图 = None
+        self.最近检测结果: list[dict[str, Any]] = []
         self._加载模型()
 
     def _日志(self, 事件: str, **字段: Any) -> None:
@@ -222,6 +224,7 @@ class 物资检测器:
     ) -> list[dict[str, Any]]:
         started = time.perf_counter()
         frame_bgr, backend = 截图模块.grab_bbox_bgr((left, top, right, bottom))
+        self.最近截图 = frame_bgr.copy()
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         tensor, meta = letterbox_到模型输入(frame_rgb, (self.输入高度, self.输入宽度))
         output = self._推理(tensor)
@@ -233,6 +236,7 @@ class 物资检测器:
             confidence_threshold=float(置信度阈值),
             iou_threshold=float(IOU阈值),
         )
+        self.最近检测结果 = result
         self._日志(
             "yolo_inference",
             执行器=self.执行器,
