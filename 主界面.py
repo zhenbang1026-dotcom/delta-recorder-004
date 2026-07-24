@@ -141,6 +141,7 @@ class 合并主界面:
         self._yolo_last_update = 0.0
         self._yolo_previous_foreground_hwnd = 0
         self._yolo_close_after = None
+        self._cruise_game_hwnd = 0
         self._detect_stop = threading.Event()
         self._cruise_stop = threading.Event()
         self._detect_thread: Optional[threading.Thread] = None
@@ -660,6 +661,7 @@ class 合并主界面:
                     日志函数=log_fn,
                     停止事件=self._cruise_stop,
                     YOLO状态函数=self._queue_yolo_status,
+                    游戏窗口句柄=self._cruise_game_hwnd,
                 )
                 self._queue.put(("cruise_done", "寻路已结束"))
             except 巡航模块.紧急停止异常:
@@ -673,6 +675,10 @@ class 合并主界面:
             self._cruise_start_after = None
             if not self.cruising or self._cruise_stop.is_set():
                 return
+            try:
+                self._cruise_game_hwnd = int(win32gui.GetForegroundWindow() or 0)
+            except Exception:
+                self._cruise_game_hwnd = 0
             self._cruise_thread = threading.Thread(target=worker, daemon=True)
             self._cruise_thread.start()
 
@@ -803,6 +809,11 @@ class 合并主界面:
         self.root.after(80, self._drain_queue)
 
     def _queue_yolo_status(self, event: str, **fields) -> None:
+        if event == "start" and not getattr(self, "_cruise_game_hwnd", 0):
+            try:
+                self._cruise_game_hwnd = int(win32gui.GetForegroundWindow() or 0)
+            except Exception:
+                self._cruise_game_hwnd = 0
         if event == "inference":
             now = time.monotonic()
             if now - self._yolo_last_update < 0.08:

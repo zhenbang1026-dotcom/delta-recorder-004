@@ -170,3 +170,40 @@ def test_yolo_action_reports_visible_progress_events() -> None:
     assert "inference" in events
     assert "aligned" in events
     assert events[-1] == "finish"
+
+
+def test_yolo_interaction_restores_game_focus_before_f() -> None:
+    inp = 假输入()
+    focus_calls: list[str] = []
+    now = [0.0]
+    detector = SimpleNamespace(
+        执行器="CPU",
+        检测一次=lambda *_args: [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}],
+    )
+    runner = 路线动作执行器(
+        inp,
+        yolo检测器=detector,
+        获取检测区域=lambda: (0, 0, 200, 200, 100, 100),
+        恢复焦点函数=lambda: focus_calls.append("game"),
+        时钟=lambda: now[0],
+        睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+
+    action = 路线动作(
+        "yolo_interact",
+        {
+            "timeout_ms": 1,
+            "tolerance_px": 12,
+            "initial_f_ms": 1,
+            "initial_wait_ms": 0,
+            "repeat_f_ms": 1,
+            "w_duration_ms": 1,
+            "f_count": 1,
+            "f_interval_ms": 1,
+        },
+    )
+
+    assert runner.执行动作(action)
+    assert focus_calls == ["game"]
+    assert ("down", "f") in inp.calls
+    assert ("down", "w") in inp.calls

@@ -27,6 +27,7 @@ class 路线动作执行器:
         停止事件: Any = None,
         日志函数: Callable[..., Any] | None = None,
         状态函数: Callable[..., Any] | None = None,
+        恢复焦点函数: Callable[[], None] | None = None,
         睡眠函数: Callable[[float], None] = time.sleep,
         时钟: Callable[[], float] = time.monotonic,
         随机数: random.Random | None = None,
@@ -42,6 +43,7 @@ class 路线动作执行器:
         self.停止事件 = 停止事件
         self.日志函数 = 日志函数
         self.状态函数 = 状态函数
+        self.恢复焦点函数 = 恢复焦点函数
         self.睡眠函数 = 睡眠函数
         self.时钟 = 时钟
         self.随机数 = 随机数 or random.Random()
@@ -174,13 +176,18 @@ class 路线动作执行器:
         pressed_w = False
         try:
             self._检查停止()
+            if self.恢复焦点函数 is not None:
+                self.恢复焦点函数()
+            self._日志("yolo_key_down", 阶段="initial_f", 按键=f_key)
             self.输入模块.键盘按下(f_key)
             try:
                 self._等待(int(p.get("initial_f_ms", 500)) / 1000)
             finally:
                 self.输入模块.键盘弹起(f_key)
+                self._日志("yolo_key_up", 阶段="initial_f", 按键=f_key)
             self._等待(int(p.get("initial_wait_ms", 300)) / 1000)
 
+            self._日志("yolo_key_down", 阶段="w", 按键=w_key)
             self.输入模块.键盘按下(w_key)
             pressed_w = True
             w_start = self.时钟()
@@ -189,11 +196,13 @@ class 路线动作执行器:
             for index in range(int(p["f_count"])):
                 self._检查停止()
                 cycle_start = self.时钟()
+                self._日志("yolo_key_down", 阶段="repeat_f", 按键=f_key, 次数=index + 1)
                 self.输入模块.键盘按下(f_key)
                 try:
                     self._等待(repeat_ms / 1000)
                 finally:
                     self.输入模块.键盘弹起(f_key)
+                    self._日志("yolo_key_up", 阶段="repeat_f", 按键=f_key, 次数=index + 1)
                 if index + 1 < int(p["f_count"]):
                     self._等待(max(0, interval_ms / 1000 - (self.时钟() - cycle_start)))
             self._等待(max(0, int(p["w_duration_ms"]) / 1000 - (self.时钟() - w_start)))
@@ -202,12 +211,14 @@ class 路线动作执行器:
             if pressed_w:
                 try:
                     self.输入模块.键盘弹起(w_key)
+                    self._日志("yolo_key_up", 阶段="w", 按键=w_key)
                 except Exception:
                     pass
 
     def _YOLO交互(self, action: 路线动作) -> bool:
         p = action.参数
         timeout_ms = int(p.get("timeout_ms", 5000))
+        self._日志("yolo_interaction_start", 超时毫秒=timeout_ms)
         self._状态(
             "start",
             目标角度=p.get("angle"),
@@ -271,6 +282,7 @@ class 路线动作执行器:
             self._状态("timeout", 超时毫秒=timeout_ms)
             return False
         finally:
+            self._日志("yolo_interaction_finish", 成功=成功)
             self._状态("finish", 成功=成功)
 
     def 执行动作(self, action: 路线动作) -> bool:

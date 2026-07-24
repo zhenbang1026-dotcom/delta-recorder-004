@@ -1644,6 +1644,7 @@ def 巡航(
     停止事件: threading.Event | None = None,
     视角速度倍率=默认视角速度倍率,
     YOLO状态函数=None,
+    游戏窗口句柄: int | None = None,
 ) -> None:
     校验到点阈值(到点阈值)
     视角速度倍率 = 规范化视角速度倍率(视角速度倍率)
@@ -1662,6 +1663,7 @@ def 巡航(
         执行器参数["定位器"] = 实际定位器
         执行器参数["日志函数"] = 日志函数
         执行器参数["YOLO状态函数"] = YOLO状态函数
+        执行器参数["游戏窗口句柄"] = 游戏窗口句柄
     if 停止事件 is not None:
         执行器参数["停止事件"] = 停止事件
     控制器 = 巡航控制器(
@@ -1724,6 +1726,7 @@ class Win32执行器:
         YOLO检测器工厂=None,
         获取检测区域函数=None,
         YOLO状态函数=None,
+        游戏窗口句柄: int | None = None,
     ):
         self.输入模块 = 输入模块
         self.停止事件 = 停止事件
@@ -1739,6 +1742,7 @@ class Win32执行器:
         self._YOLO检测器工厂 = YOLO检测器工厂
         self._获取检测区域函数 = 获取检测区域函数
         self.YOLO状态函数 = YOLO状态函数
+        self.游戏窗口句柄 = int(游戏窗口句柄 or 0)
         self._YOLO检测器 = None
 
     def _日志(self, 事件: str, **字段) -> None:
@@ -1777,11 +1781,23 @@ class Win32执行器:
             停止事件=self.停止事件,
             日志函数=self.日志函数,
             状态函数=self.YOLO状态函数,
+            恢复焦点函数=self._恢复游戏焦点,
         )
         try:
             return 执行器.执行动作列表(动作列表)
         except InterruptedError as exc:
             raise 紧急停止异常(str(exc)) from exc
+
+    def _恢复游戏焦点(self) -> None:
+        if not self.游戏窗口句柄:
+            return
+        try:
+            import win32gui
+
+            if win32gui.IsWindow(self.游戏窗口句柄):
+                win32gui.SetForegroundWindow(self.游戏窗口句柄)
+        except Exception:
+            pass
 
     def _更新视角(self, 鼠标像素: int | None) -> None:
         角度差 = float(鼠标像素 or 0) / 当前每度像素()
