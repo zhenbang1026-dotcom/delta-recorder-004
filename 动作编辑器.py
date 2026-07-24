@@ -16,6 +16,8 @@ from 路线动作 import 路线动作, 路线点, 读取路线文件, 写入路�
     "view": "恢复当前视角",
     "look": "低头 / 抬头",
     "yolo_interact": "YOLO 识别并交互",
+    "yolo_aim_on": "YOLO 识别并对准开",
+    "yolo_aim_off": "YOLO 识别并对准关",
 }
 标签动作 = {label: action_type for action_type, label in 动作标签.items()}
 
@@ -96,6 +98,20 @@ def 从表单创建动作(action_type: str, values: dict[str, object]) -> 路线
                 "f_interval_ms": _整数(values.get("f_interval_ms"), "循环 F 间隔"),
             },
         )
+    elif action_type == "yolo_aim_on":
+        action = 路线动作(
+            "yolo_aim_on",
+            {
+                "angle": _浮点数(values.get("angle"), "视角角度"),
+                "confidence": _浮点数(values.get("confidence"), "置信度"),
+                "tolerance_px": _整数(values.get("tolerance_px"), "对准容差"),
+                "target_y_offset_px": _整数(
+                    values.get("target_y_offset_px", 0), "容器垂直坐标偏差"
+                ),
+            },
+        )
+    elif action_type == "yolo_aim_off":
+        action = 路线动作("yolo_aim_off", {})
     else:
         raise ValueError(f"不支持的动作类型: {action_type}")
     return action.校验()
@@ -119,6 +135,13 @@ def 动作摘要(action: 路线动作) -> str:
     if action.类型 == "look":
         direction = "低头" if p.get("direction") == "down" else "抬头"
         return f"{direction} Y={p.get('y_delta')}px，X±{p.get('x_random', 0)}px，{p.get('duration_ms')}ms"
+    if action.类型 == "yolo_aim_on":
+        return (
+            f"YOLO 持续对准开（视角 {float(p.get('angle', 0)):.2f}°，"
+            f"容器Y偏差 {p.get('target_y_offset_px', 0)}px）"
+        )
+    if action.类型 == "yolo_aim_off":
+        return "YOLO 持续对准关"
     return (
         f"YOLO 对准（视角 {float(p.get('angle', 0)):.2f}°），W {p.get('w_duration_ms')}ms，"
         f"循环 F {p.get('f_count')} 次，容器Y偏差 {p.get('target_y_offset_px', 0)}px"
@@ -157,6 +180,13 @@ def 动作摘要(action: 路线动作) -> str:
         ("f_interval_ms", "循环 F 启动间隔（毫秒）", "500", None),
         ("repeat_f_ms", "每次循环 F 持续（毫秒）", "50", None),
     ],
+    "yolo_aim_on": [
+        ("angle", "先恢复水平视角（度）", "0", None),
+        ("confidence", "置信度阈值", "0.50", None),
+        ("tolerance_px", "X/Y 对准容差（像素）", "12", None),
+        ("target_y_offset_px", "容器垂直坐标偏差（像素）", "0", None),
+    ],
+    "yolo_aim_off": [],
 }
 
 

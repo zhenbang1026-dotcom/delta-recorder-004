@@ -510,3 +510,62 @@ def test_yolo_applies_vertical_target_offset_to_initial_and_follow_aim() -> None
 
     assert runner.执行动作(action)
     assert ("aim", 0.0, 20.0) in 记录
+
+
+class 假持续YOLO服务:
+    def __init__(self):
+        self.calls = []
+
+    def 开启(self, params):
+        self.calls.append(("on", dict(params)))
+        return True
+
+    def 关闭(self):
+        self.calls.append(("off",))
+
+    def 暂停(self):
+        self.calls.append(("pause",))
+        return {"confidence": 0.6}
+
+    def 恢复(self, params):
+        self.calls.append(("resume", dict(params)))
+        return True
+
+
+def test_persistent_yolo_aim_on_restores_view_and_off_stops_service() -> None:
+    service = 假持续YOLO服务()
+    locator = SimpleNamespace(读取状态=lambda: (0, 0, 90.0))
+    runner = 路线动作执行器(假输入(), 定位器=locator, 持续YOLO服务=service)
+    on = 路线动作(
+        "yolo_aim_on",
+        {"angle": 90.0, "confidence": 0.5, "tolerance_px": 12, "target_y_offset_px": 20},
+    )
+
+    assert runner.执行动作(on)
+    assert runner.执行动作(路线动作("yolo_aim_off", {}))
+    assert service.calls == [
+        ("on", {"angle": 90.0, "confidence": 0.5, "tolerance_px": 12, "target_y_offset_px": 20}),
+        ("off",),
+    ]
+
+
+def test_old_yolo_interaction_pauses_and_resumes_persistent_aim() -> None:
+    service = 假持续YOLO服务()
+    now = [0.0]
+    detector = SimpleNamespace(
+        检测一次=lambda *_args: [
+            {"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}
+        ]
+    )
+    runner = 路线动作执行器(
+        假输入(),
+        yolo检测器=detector,
+        获取检测区域=lambda: (0, 0, 200, 200, 100, 100),
+        持续YOLO服务=service,
+        时钟=lambda: now[0],
+        睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+
+    assert runner.执行动作(_YOLO动作())
+    assert service.calls[0] == ("pause",)
+    assert service.calls[-1] == ("resume", {"confidence": 0.6})

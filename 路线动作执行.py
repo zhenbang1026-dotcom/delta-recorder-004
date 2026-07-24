@@ -33,6 +33,7 @@ class 路线动作执行器:
         时钟: Callable[[], float] = time.monotonic,
         随机数: random.Random | None = None,
         YOLO对准控制器工厂: Callable[..., Any] = YOLO连续对准控制器,
+        持续YOLO服务: Any = None,
         最大视角恢复步长: int = 1200,
     ) -> None:
         self.输入模块 = 输入模块
@@ -48,6 +49,7 @@ class 路线动作执行器:
         self.时钟 = 时钟
         self.随机数 = 随机数 or random.Random()
         self.YOLO对准控制器工厂 = YOLO对准控制器工厂
+        self.持续YOLO服务 = 持续YOLO服务
         self.最大视角恢复步长 = int(最大视角恢复步长)
 
     def _日志(self, 事件: str, **字段: Any) -> None:
@@ -325,6 +327,7 @@ class 路线动作执行器:
         p = action.参数
         timeout_ms = int(p.get("timeout_ms", 5000))
         对准控制器 = None
+        持续恢复参数 = self.持续YOLO服务.暂停() if self.持续YOLO服务 is not None else None
         self._日志("yolo_interaction_start", 超时毫秒=timeout_ms)
         self._状态(
             "start",
@@ -422,6 +425,26 @@ class 路线动作执行器:
                 对准控制器.停止()
             self._日志("yolo_interaction_finish", 成功=成功)
             self._状态("finish", 成功=成功)
+            if 持续恢复参数 is not None:
+                try:
+                    self.持续YOLO服务.恢复(持续恢复参数)
+                except Exception as exc:
+                    self._日志("yolo_persistent_resume_failed", 错误=str(exc))
+
+    def _持续YOLO开启(self, action: 路线动作) -> bool:
+        if self.持续YOLO服务 is None:
+            self._日志("yolo_persistent_unavailable")
+            return False
+        p = action.参数
+        if self.定位器 is not None and not self.恢复视角(float(p["angle"])):
+            self._日志("yolo_persistent_view_failed", 目标角度=p["angle"])
+            return False
+        return bool(self.持续YOLO服务.开启(p))
+
+    def _持续YOLO关闭(self) -> bool:
+        if self.持续YOLO服务 is not None:
+            self.持续YOLO服务.关闭()
+        return True
 
     def 执行动作(self, action: 路线动作) -> bool:
         action.校验()
@@ -440,6 +463,10 @@ class 路线动作执行器:
             return self._低头抬头(action)
         if action.类型 == "yolo_interact":
             return self._YOLO交互(action)
+        if action.类型 == "yolo_aim_on":
+            return self._持续YOLO开启(action)
+        if action.类型 == "yolo_aim_off":
+            return self._持续YOLO关闭()
         raise ValueError(f"不支持的路线动作: {action.类型}")
 
     def 执行动作列表(self, actions: Iterable[路线动作]) -> list[bool]:

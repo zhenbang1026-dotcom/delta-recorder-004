@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 import 巡航脚本 as cruise
+from 路线动作 import 路线动作
 
 
 class 假输入模块:
@@ -72,6 +73,40 @@ def test_legacy_action_and_executor_use_continuous_controller(monkeypatch):
     assert 输入.丝滑调用 == []
     assert 连续.角度差记录 == [pytest.approx(433 / cruise.当前每度像素())]
     assert 连续.已停止
+
+
+def test_persistent_yolo_service_is_shared_across_route_action_batches_and_stopped():
+    detector = SimpleNamespace(释放资源=lambda: None)
+    service = SimpleNamespace(关闭次数=0)
+    service.关闭 = lambda: setattr(service, "关闭次数", service.关闭次数 + 1)
+    received_services = []
+
+    class 假路线动作执行器:
+        def __init__(self, _input, **kwargs):
+            received_services.append(kwargs.get("持续YOLO服务"))
+
+        def 执行动作列表(self, actions):
+            return [True for _action in actions]
+
+    executor = cruise.Win32执行器(
+        输入模块=假输入模块(),
+        连续控制器工厂=lambda _input, **_kwargs: 假连续控制器(),
+        路线动作执行器工厂=假路线动作执行器,
+        YOLO检测器工厂=lambda: detector,
+        获取检测区域函数=lambda: (0, 0, 200, 200, 100, 100),
+        持续YOLO服务工厂=lambda *_args, **_kwargs: service,
+    )
+    on = 路线动作(
+        "yolo_aim_on",
+        {"angle": 90.0, "confidence": 0.5, "tolerance_px": 12, "target_y_offset_px": 0},
+    )
+
+    executor.执行路线动作((on,))
+    executor.执行路线动作((路线动作("comment", {"text": "跨路线点"}),))
+    executor.停止()
+
+    assert received_services == [service, service]
+    assert service.关闭次数 == 1
 
 
 @pytest.mark.parametrize(

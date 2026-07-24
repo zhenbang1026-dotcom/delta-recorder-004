@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from 动作编辑器 import 表单字段, 从表单创建动作
+from 动作编辑器 import 动作标签, 表单字段, 从表单创建动作
 
 
 def test_key_form_builds_ordered_combo() -> None:
@@ -120,3 +120,31 @@ def test_yolo_form_defaults_initial_f_to_200ms_and_offset_to_zero() -> None:
 
     assert defaults["initial_f_ms"] == "200"
     assert defaults["target_y_offset_px"] == "0"
+
+
+def test_persistent_yolo_aim_on_and_off_forms_are_separate_actions() -> None:
+    on = 从表单创建动作(
+        "yolo_aim_on",
+        {
+            "angle": "248.2",
+            "confidence": "0.5",
+            "tolerance_px": "12",
+            "target_y_offset_px": "20",
+        },
+    )
+    off = 从表单创建动作("yolo_aim_off", {})
+
+    assert 动作标签["yolo_interact"] == "YOLO 识别并交互"
+    assert 动作标签["yolo_aim_on"] == "YOLO 识别并对准开"
+    assert 动作标签["yolo_aim_off"] == "YOLO 识别并对准关"
+    assert on.参数 == {
+        "angle": 248.2,
+        "confidence": 0.5,
+        "tolerance_px": 12,
+        "target_y_offset_px": 20,
+    }
+    assert off.参数 == {}
+    assert [key for key, _label, _default, _options in 表单字段["yolo_aim_on"]] == [
+        "angle", "confidence", "tolerance_px", "target_y_offset_px"
+    ]
+    assert 表单字段["yolo_aim_off"] == []

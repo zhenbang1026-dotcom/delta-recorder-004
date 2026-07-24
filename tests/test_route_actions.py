@@ -103,6 +103,19 @@ def test_yolo_action_preserves_signed_vertical_target_offset() -> None:
     assert action.校验().参数["target_y_offset_px"] == -20
 
 
+def test_persistent_yolo_aim_actions_validate_and_roundtrip(tmp_path: Path) -> None:
+    on = 路线动作(
+        "yolo_aim_on",
+        {"angle": 90.0, "confidence": 0.5, "tolerance_px": 12, "target_y_offset_px": -20},
+    ).校验()
+    off = 路线动作("yolo_aim_off", {}).校验()
+    path = tmp_path / "persistent-yolo.jsonl"
+
+    写入路线文件(path, [路线点(1, 2, 3.0, False, (on, off))])
+
+    assert 读取路线文件(path)[0].actions == (on, off)
+
+
 def test_editing_actions_keeps_explicit_order() -> None:
     point = 路线点(
         1,

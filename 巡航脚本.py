@@ -14,6 +14,7 @@ import time
 from 连续视角控制 import 默认视角速度倍率, 规范化视角速度倍率, 连续视角控制器
 from 路线动作 import 路线动作, 读取路线文件 as 读取动作路线文件
 from 路线动作执行 import 路线动作执行器
+from YOLO持续对准 import YOLO持续对准服务
 
 
 def _按文件名加载模块(模块名):
@@ -1724,6 +1725,7 @@ class Win32执行器:
         连续控制器工厂=连续视角控制器,
         路线动作执行器工厂=路线动作执行器,
         YOLO检测器工厂=None,
+        持续YOLO服务工厂=YOLO持续对准服务,
         获取检测区域函数=None,
         YOLO状态函数=None,
         游戏窗口句柄: int | None = None,
@@ -1740,10 +1742,12 @@ class Win32执行器:
         self._本段已疾跑 = False
         self._路线动作执行器工厂 = 路线动作执行器工厂
         self._YOLO检测器工厂 = YOLO检测器工厂
+        self._持续YOLO服务工厂 = 持续YOLO服务工厂
         self._获取检测区域函数 = 获取检测区域函数
         self.YOLO状态函数 = YOLO状态函数
         self.游戏窗口句柄 = int(游戏窗口句柄 or 0)
         self._YOLO检测器 = None
+        self._持续YOLO服务 = None
 
     def _日志(self, 事件: str, **字段) -> None:
         写日志(self.日志函数, 事件, **字段)
@@ -1764,14 +1768,30 @@ class Win32执行器:
         except Exception as exc:
             self._日志("event=yolo_load_failed", 错误=str(exc))
 
+    def _确保持续YOLO服务(self) -> None:
+        if self._持续YOLO服务 is not None:
+            return
+        if self._YOLO检测器 is None or self._获取检测区域函数 is None:
+            return
+        self._持续YOLO服务 = self._持续YOLO服务工厂(
+            self.输入模块,
+            self._YOLO检测器,
+            self._获取检测区域函数,
+            停止事件=self.停止事件,
+            日志函数=self.日志函数,
+            状态函数=self.YOLO状态函数,
+        )
+
     def 执行路线动作(self, actions) -> list[bool]:
         动作列表 = tuple(actions)
         if not 动作列表:
             return []
         self._停止前进()
         self._更新视角(0)
-        if any(动作.类型 == "yolo_interact" for 动作 in 动作列表):
+        if any(动作.类型 in {"yolo_interact", "yolo_aim_on"} for 动作 in 动作列表):
             self._确保YOLO检测器()
+        if any(动作.类型 == "yolo_aim_on" for 动作 in 动作列表):
+            self._确保持续YOLO服务()
         执行器 = self._路线动作执行器工厂(
             self.输入模块,
             定位器=self.定位器,
@@ -1782,6 +1802,7 @@ class Win32执行器:
             日志函数=self.日志函数,
             状态函数=self.YOLO状态函数,
             恢复焦点函数=self._恢复游戏焦点,
+            持续YOLO服务=self._持续YOLO服务,
         )
         try:
             return 执行器.执行动作列表(动作列表)
@@ -1876,6 +1897,9 @@ class Win32执行器:
         raise ValueError(f"不支持的动作: {动作.类型}")
 
     def 停止(self) -> None:
+        if self._持续YOLO服务 is not None:
+            self._持续YOLO服务.关闭()
+            self._持续YOLO服务 = None
         self._连续视角控制器.停止()
         self._停止前进()
         if self._YOLO检测器 is not None:

@@ -13,7 +13,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-支持动作类型 = {"key", "wait", "comment", "view", "look", "yolo_interact"}
+支持动作类型 = {
+    "key", "wait", "comment", "view", "look", "yolo_interact",
+    "yolo_aim_on", "yolo_aim_off",
+}
 
 
 def _整数(值: Any, 名称: str, *, 最小值: int | None = None) -> int:
@@ -92,6 +95,15 @@ class 路线动作:
             required = (count - 1) * interval + repeat_ms
             if w_ms < required:
                 raise ValueError(f"W 持续时间不足，至少需要 {required}ms")
+        elif self.类型 == "yolo_aim_on":
+            angle = float(p.get("angle"))
+            if not math.isfinite(angle) or not 0 <= angle < 360:
+                raise ValueError("视角角度必须在 0 到 360 度之间")
+            confidence = float(p.get("confidence", 0.5))
+            if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+                raise ValueError("置信度必须在 0 到 1 之间")
+            _整数(p.get("tolerance_px", 12), "对准容差", 最小值=1)
+            _整数(p.get("target_y_offset_px", 0), "容器垂直坐标偏差")
         return self
 
     def to_dict(self) -> dict[str, Any]:

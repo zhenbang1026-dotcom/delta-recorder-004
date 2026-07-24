@@ -338,6 +338,21 @@ def test任务结束消息会恢复主窗口(kind: str) -> None:
     assert ("deiconify",) in app.root.calls
 
 
+def test_yolo重新开始会取消之前安排的窗口关闭() -> None:
+    app = _button_app()
+    app._yolo_close_after = "close-after"
+    app._yolo_status_label = None
+    app._yolo_info_label = None
+    app._创建YOLO窗口 = lambda: None
+
+    app._on_yolo_status(
+        {"event": "start", "持续跟随": True, "目标角度": 90.0, "置信度阈值": 0.5}
+    )
+
+    assert ("after_cancel", "close-after") in app.root.calls
+    assert app._yolo_close_after is None
+
+
 def testesc轮询仍可停止回放(monkeypatch: pytest.MonkeyPatch) -> None:
     app = _button_app()
     app.cruising = True

@@ -1017,15 +1017,33 @@ class 合并主界面:
 
     def _on_yolo_status(self, payload: dict) -> None:
         event = str(payload.get("event", ""))
+        persistent = bool(payload.get("持续跟随"))
         if event == "start":
+            if self._yolo_close_after is not None:
+                try:
+                    self.root.after_cancel(self._yolo_close_after)
+                except tk.TclError:
+                    pass
+                self._yolo_close_after = None
             self._创建YOLO窗口()
             if self._yolo_status_label is not None:
-                self._yolo_status_label.configure(text="YOLO：准备识别")
-            if self._yolo_info_label is not None:
-                self._yolo_info_label.configure(
-                    text=f"目标视角：{payload.get('目标角度', '--')}°\n"
-                    f"置信度阈值：{float(payload.get('置信度阈值', 0.5)):.2f}  |  超时：{payload.get('超时毫秒', '--')}ms"
+                self._yolo_status_label.configure(
+                    text="YOLO：持续对准已开启" if persistent else "YOLO：准备识别"
                 )
+            if self._yolo_info_label is not None:
+                if persistent:
+                    info = (
+                        f"目标视角：{payload.get('目标角度', '--')}°\n"
+                        f"置信度阈值：{float(payload.get('置信度阈值', 0.5)):.2f}  |  "
+                        "持续识别，直到执行关闭动作"
+                    )
+                else:
+                    info = (
+                        f"目标视角：{payload.get('目标角度', '--')}°\n"
+                        f"置信度阈值：{float(payload.get('置信度阈值', 0.5)):.2f}  |  "
+                        f"超时：{payload.get('超时毫秒', '--')}ms"
+                    )
+                self._yolo_info_label.configure(text=info)
             return
         if self._yolo_window is None:
             self._创建YOLO窗口()
@@ -1034,12 +1052,13 @@ class 合并主界面:
         elif event == "view_failed":
             status = f"YOLO：视角恢复失败（{payload.get('目标角度', '--')}°），跳过识别"
         elif event == "inference":
-            status = "YOLO：识别中"
+            status = "YOLO：持续识别中" if persistent else "YOLO：识别中"
             target = payload.get("目标") or {}
+            progress = "模式：持续检测" if persistent else f"剩余时间：{payload.get('剩余毫秒', 0)}ms"
             info = (
                 f"执行器：{payload.get('执行器', '未知')}  |  检测目标：{payload.get('检测数', 0)} 个\n"
                 f"当前目标：{target.get('类别名称', '未找到')} 置信度：{float(target.get('置信度', 0)):.2f}\n"
-                f"剩余时间：{payload.get('剩余毫秒', 0)}ms"
+                f"{progress}"
             )
             if self._yolo_info_label is not None:
                 self._yolo_info_label.configure(text=info)
@@ -1047,15 +1066,20 @@ class 合并主界面:
                 payload.get("截图"), payload.get("检测结果", []), payload.get("ROI", (0, 0, 1, 1)), target
             )
         elif event == "adjust":
-            status = "YOLO：对准调整中"
+            status = "YOLO：持续对准调整中" if persistent else "YOLO：对准调整中"
         elif event == "aligned":
             status = f"YOLO：已对准，误差 X={payload.get('误差X', '--')} Y={payload.get('误差Y', '--')}，执行 F/W"
         elif event == "timeout":
             status = "YOLO：识别/对准超时，跳过动作"
         elif event == "unavailable":
             status = "YOLO：检测器不可用，跳过动作"
+        elif event == "follow_failed":
+            status = f"YOLO：持续检测失败，正在重试（{payload.get('错误', '--')}）"
         elif event == "finish":
-            status = "YOLO：动作完成" if payload.get("成功") else "YOLO：动作失败，已继续路线"
+            if persistent:
+                status = "YOLO：持续对准已关闭"
+            else:
+                status = "YOLO：动作完成" if payload.get("成功") else "YOLO：动作失败，已继续路线"
             if self._yolo_window is not None:
                 self._yolo_close_after = self.root.after(1200, self._关闭YOLO窗口)
         else:
