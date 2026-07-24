@@ -409,3 +409,41 @@ def test_yolo_follow_detection_failure_does_not_abort_w_action() -> None:
     assert any(event == "yolo_follow_failed" for event, _fields in 日志)
     assert ("down", "w") in runner.输入模块.calls
     assert ("up", "w") in runner.输入模块.calls
+
+
+def test_yolo_applies_vertical_target_offset_to_initial_and_follow_aim() -> None:
+    记录 = []
+    targets = iter(
+        [
+            [{"中心X": 100, "中心Y": 80, "置信度": 0.9, "类别名称": "医疗包"}],
+            [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}],
+        ]
+    )
+    now = [0.0]
+    runner = 路线动作执行器(
+        假输入(),
+        yolo检测器=SimpleNamespace(检测一次=lambda *_args: next(targets)),
+        获取检测区域=lambda: (0, 0, 200, 200, 100, 100),
+        YOLO对准控制器工厂=lambda input_module, **kwargs: 假YOLO对准控制器(
+            input_module, 记录, **kwargs
+        ),
+        时钟=lambda: now[0],
+        睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+    action = 路线动作(
+        "yolo_interact",
+        {
+            "timeout_ms": 100,
+            "tolerance_px": 12,
+            "target_y_offset_px": 20,
+            "initial_f_ms": 1,
+            "initial_wait_ms": 0,
+            "repeat_f_ms": 1,
+            "w_duration_ms": 1,
+            "f_count": 1,
+            "f_interval_ms": 1,
+        },
+    )
+
+    assert runner.执行动作(action)
+    assert ("aim", 0.0, 20.0) in 记录

@@ -71,6 +71,9 @@ def 从表单创建动作(action_type: str, values: dict[str, object]) -> 路线
                 "confidence": _浮点数(values.get("confidence"), "置信度"),
                 "timeout_ms": _整数(values.get("timeout_ms"), "检测超时"),
                 "tolerance_px": _整数(values.get("tolerance_px"), "对准容差"),
+                "target_y_offset_px": _整数(
+                    values.get("target_y_offset_px", 0), "容器垂直坐标偏差"
+                ),
                 "initial_f_ms": _整数(values.get("initial_f_ms"), "首次 F 持续时间"),
                 "initial_wait_ms": _整数(values.get("initial_wait_ms"), "首次 F 后等待"),
                 "repeat_f_ms": _整数(values.get("repeat_f_ms"), "循环 F 持续时间"),
@@ -100,7 +103,7 @@ def 动作摘要(action: 路线动作) -> str:
         return f"{direction} Y={p.get('y_delta')}px，X±{p.get('x_random', 0)}px，{p.get('duration_ms')}ms"
     return (
         f"YOLO 对准（视角 {float(p.get('angle', 0)):.2f}°），W {p.get('w_duration_ms')}ms，"
-        f"循环 F {p.get('f_count')} 次"
+        f"循环 F {p.get('f_count')} 次，容器Y偏差 {p.get('target_y_offset_px', 0)}px"
     )
 
 
@@ -124,7 +127,8 @@ def 动作摘要(action: 路线动作) -> str:
         ("confidence", "置信度阈值", "0.50", None),
         ("timeout_ms", "识别/对准超时（毫秒）", "5000", None),
         ("tolerance_px", "X/Y 对准容差（像素）", "12", None),
-        ("initial_f_ms", "首次 F 持续时间（毫秒）", "500", None),
+        ("target_y_offset_px", "容器垂直坐标偏差（像素）", "0", None),
+        ("initial_f_ms", "首次 F 持续时间（毫秒）", "200", None),
         ("initial_wait_ms", "首次 F 后等待（毫秒）", "300", None),
         ("w_duration_ms", "W 持续时间（毫秒）", "5000", None),
         ("f_count", "W 期间循环 F 次数", "5", None),

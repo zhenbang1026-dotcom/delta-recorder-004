@@ -67,6 +67,26 @@ def test_yolo_action_validates_w_duration_before_save() -> None:
         ).校验()
 
 
+def test_yolo_action_preserves_signed_vertical_target_offset() -> None:
+    action = 路线动作(
+        "yolo_interact",
+        {
+            "confidence": 0.5,
+            "timeout_ms": 5000,
+            "tolerance_px": 12,
+            "target_y_offset_px": -20,
+            "initial_f_ms": 200,
+            "initial_wait_ms": 300,
+            "repeat_f_ms": 50,
+            "w_duration_ms": 500,
+            "f_count": 1,
+            "f_interval_ms": 500,
+        },
+    )
+
+    assert action.校验().参数["target_y_offset_px"] == -20
+
+
 def test_editing_actions_keeps_explicit_order() -> None:
     point = 路线点(
         1,

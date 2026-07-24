@@ -203,6 +203,7 @@ class 路线动作执行器:
         left, top, right, bottom = roi
         center_x, center_y = 屏幕中心
         tolerance = int(p.get("tolerance_px", 12))
+        target_y_offset = int(p.get("target_y_offset_px", 0))
         confidence = float(p.get("confidence", 0.5))
         try:
             detections = self.yolo检测器.检测一次(left, top, right, bottom)
@@ -229,7 +230,7 @@ class 路线动作执行器:
                 控制器.更新误差(0.0, 0.0)
                 return
             dx = float(target["中心X"]) - center_x
-            dy = float(target["中心Y"]) - center_y
+            dy = float(target["中心Y"]) + target_y_offset - center_y
             if abs(dx) <= tolerance and abs(dy) <= tolerance:
                 目标速度X, 目标速度Y = 控制器.更新误差(0.0, 0.0)
             else:
@@ -266,7 +267,7 @@ class 路线动作执行器:
             self._日志("yolo_key_down", 阶段="initial_f", 按键=f_key)
             self.输入模块.键盘按下(f_key)
             try:
-                self._等待(int(p.get("initial_f_ms", 500)) / 1000)
+                self._等待(int(p.get("initial_f_ms", 200)) / 1000)
             finally:
                 self.输入模块.键盘弹起(f_key)
                 self._日志("yolo_key_up", 阶段="initial_f", 按键=f_key)
@@ -335,6 +336,7 @@ class 路线动作执行器:
             left, top, right, bottom, center_x, center_y = self.获取检测区域()
             deadline = self.时钟() + timeout_ms / 1000
             tolerance = int(p.get("tolerance_px", 12))
+            target_y_offset = int(p.get("target_y_offset_px", 0))
             confidence = float(p.get("confidence", 0.5))
             对准控制器 = self.YOLO对准控制器工厂(
                 self.输入模块,
@@ -368,7 +370,7 @@ class 路线动作执行器:
                     self._等待(0.05)
                     continue
                 dx = float(target["中心X"]) - center_x
-                dy = float(target["中心Y"]) - center_y
+                dy = float(target["中心Y"]) + target_y_offset - center_y
                 if abs(dx) <= tolerance and abs(dy) <= tolerance:
                     self._日志("yolo_aligned", 误差X=round(dx, 2), 误差Y=round(dy, 2))
                     self._状态("aligned", 误差X=round(dx, 2), 误差Y=round(dy, 2))
