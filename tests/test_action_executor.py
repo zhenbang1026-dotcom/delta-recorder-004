@@ -3,6 +3,8 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from 路线动作 import 路线动作
 from 路线动作执行 import 路线动作执行器
 
@@ -207,3 +209,106 @@ def test_yolo_interaction_restores_game_focus_before_f() -> None:
     assert focus_calls == ["game"]
     assert ("down", "f") in inp.calls
     assert ("down", "w") in inp.calls
+
+
+class 假YOLO对准控制器:
+    def __init__(self, _输入模块, 记录, **_kwargs):
+        self.记录 = 记录
+
+    def 更新误差(self, dx, dy):
+        self.记录.append(("aim", dx, dy))
+        return dx, dy
+
+    def 停止(self):
+        self.记录.append(("aim_stop",))
+
+
+def _YOLO动作():
+    return 路线动作(
+        "yolo_interact",
+        {
+            "timeout_ms": 100,
+            "tolerance_px": 12,
+            "initial_f_ms": 1,
+            "initial_wait_ms": 0,
+            "repeat_f_ms": 1,
+            "w_duration_ms": 1,
+            "f_count": 1,
+            "f_interval_ms": 1,
+        },
+    )
+
+
+def test_yolo_uses_smooth_controller_and_stops_it_before_keyboard_actions() -> None:
+    记录 = []
+
+    class 带记录输入(假输入):
+        def 键盘按下(self, key):
+            记录.append(("down", key))
+            super().键盘按下(key)
+
+    targets = iter(
+        [
+            [{"中心X": 150, "中心Y": 80, "置信度": 0.9, "类别名称": "医疗包"}],
+            [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}],
+        ]
+    )
+    now = [0.0]
+    输入 = 带记录输入()
+    runner = 路线动作执行器(
+        输入,
+        yolo检测器=SimpleNamespace(检测一次=lambda *_args: next(targets)),
+        获取检测区域=lambda: (0, 0, 200, 200, 100, 100),
+        YOLO对准控制器工厂=lambda input_module, **kwargs: 假YOLO对准控制器(
+            input_module, 记录, **kwargs
+        ),
+        时钟=lambda: now[0],
+        睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+
+    assert runner.执行动作(_YOLO动作())
+    assert ("aim", 50.0, -20.0) in 记录
+    assert 记录.index(("aim_stop",)) < 记录.index(("down", "f"))
+    assert not any(call[0] == "move" for call in 输入.calls)
+
+
+def test_yolo_stops_smooth_controller_on_timeout() -> None:
+    记录 = []
+    now = [0.0]
+    runner = 路线动作执行器(
+        假输入(),
+        yolo检测器=SimpleNamespace(
+            检测一次=lambda *_args: [
+                {"中心X": 150, "中心Y": 80, "置信度": 0.9, "类别名称": "医疗包"}
+            ]
+        ),
+        获取检测区域=lambda: (0, 0, 200, 200, 100, 100),
+        YOLO对准控制器工厂=lambda input_module, **kwargs: 假YOLO对准控制器(
+            input_module, 记录, **kwargs
+        ),
+        时钟=lambda: now[0],
+        睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+
+    assert not runner.执行动作(_YOLO动作())
+    assert 记录[-1] == ("aim_stop",)
+
+
+def test_yolo_stops_smooth_controller_when_detection_raises() -> None:
+    记录 = []
+
+    def 检测失败(*_args):
+        raise RuntimeError("检测失败")
+
+    runner = 路线动作执行器(
+        假输入(),
+        yolo检测器=SimpleNamespace(检测一次=检测失败),
+        获取检测区域=lambda: (0, 0, 200, 200, 100, 100),
+        YOLO对准控制器工厂=lambda input_module, **kwargs: 假YOLO对准控制器(
+            input_module, 记录, **kwargs
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="检测失败"):
+        runner.执行动作(_YOLO动作())
+    assert 记录[-1] == ("aim_stop",)

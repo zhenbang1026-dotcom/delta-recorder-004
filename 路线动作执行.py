@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable, Iterable
 
 from 路线动作 import 路线动作
+from YOLO连续对准 import YOLO连续对准控制器
 from YOLO物资动作 import 选择综合目标
 
 
@@ -31,8 +32,7 @@ class 路线动作执行器:
         睡眠函数: Callable[[float], None] = time.sleep,
         时钟: Callable[[], float] = time.monotonic,
         随机数: random.Random | None = None,
-        对准增益: float = 0.65,
-        最大对准步长: int = 80,
+        YOLO对准控制器工厂: Callable[..., Any] = YOLO连续对准控制器,
         最大视角恢复步长: int = 1200,
     ) -> None:
         self.输入模块 = 输入模块
@@ -47,8 +47,7 @@ class 路线动作执行器:
         self.睡眠函数 = 睡眠函数
         self.时钟 = 时钟
         self.随机数 = 随机数 or random.Random()
-        self.对准增益 = float(对准增益)
-        self.最大对准步长 = int(最大对准步长)
+        self.YOLO对准控制器工厂 = YOLO对准控制器工厂
         self.最大视角恢复步长 = int(最大视角恢复步长)
 
     def _日志(self, 事件: str, **字段: Any) -> None:
@@ -218,6 +217,7 @@ class 路线动作执行器:
     def _YOLO交互(self, action: 路线动作) -> bool:
         p = action.参数
         timeout_ms = int(p.get("timeout_ms", 5000))
+        对准控制器 = None
         self._日志("yolo_interaction_start", 超时毫秒=timeout_ms)
         self._状态(
             "start",
@@ -241,6 +241,11 @@ class 路线动作执行器:
             deadline = self.时钟() + timeout_ms / 1000
             tolerance = int(p.get("tolerance_px", 12))
             confidence = float(p.get("confidence", 0.5))
+            对准控制器 = self.YOLO对准控制器工厂(
+                self.输入模块,
+                对准容差=tolerance,
+                时钟=self.时钟,
+            )
             while self.时钟() < deadline:
                 self._检查停止()
                 detections = self.yolo检测器.检测一次(left, top, right, bottom)
@@ -264,6 +269,7 @@ class 路线动作执行器:
                     执行器=getattr(self.yolo检测器, "执行器", "未知"),
                 )
                 if target is None:
+                    对准控制器.更新误差(0.0, 0.0)
                     self._等待(0.05)
                     continue
                 dx = float(target["中心X"]) - center_x
@@ -271,17 +277,25 @@ class 路线动作执行器:
                 if abs(dx) <= tolerance and abs(dy) <= tolerance:
                     self._日志("yolo_aligned", 误差X=round(dx, 2), 误差Y=round(dy, 2))
                     self._状态("aligned", 误差X=round(dx, 2), 误差Y=round(dy, 2))
+                    对准控制器.停止()
+                    对准控制器 = None
                     成功 = self._执行首次按键和循环(p)
                     return 成功
-                move_x = int(round(max(-self.最大对准步长, min(self.最大对准步长, dx * self.对准增益))))
-                move_y = int(round(max(-self.最大对准步长, min(self.最大对准步长, dy * self.对准增益))))
-                self.输入模块.鼠标相对移动(move_x, move_y)
-                self._状态("adjust", 移动X=move_x, 移动Y=move_y, 误差X=round(dx, 2), 误差Y=round(dy, 2))
+                目标速度X, 目标速度Y = 对准控制器.更新误差(dx, dy)
+                self._状态(
+                    "adjust",
+                    目标速度X=round(目标速度X, 2),
+                    目标速度Y=round(目标速度Y, 2),
+                    误差X=round(dx, 2),
+                    误差Y=round(dy, 2),
+                )
                 self._等待(0.02)
             self._日志("yolo_timeout", 超时毫秒=timeout_ms)
             self._状态("timeout", 超时毫秒=timeout_ms)
             return False
         finally:
+            if 对准控制器 is not None:
+                对准控制器.停止()
             self._日志("yolo_interaction_finish", 成功=成功)
             self._状态("finish", 成功=成功)
 
