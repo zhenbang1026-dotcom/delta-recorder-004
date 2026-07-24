@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from copy import deepcopy
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -319,10 +320,11 @@ class 动作列表窗口:
         ttk.Label(outer, text="动作按列表从上到下执行，可连续添加多个。").pack(anchor="w")
         self.listbox = tk.Listbox(outer, height=15)
         self.listbox.pack(fill="both", expand=True, pady=8)
+        self.window.bind("<Control-c>", self._复制快捷键)
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x")
         for text, command in (
-            ("添加", self._添加), ("编辑", self._编辑), ("删除", self._删除),
+            ("添加", self._添加), ("编辑", self._编辑), ("复制", self._复制), ("删除", self._删除),
             ("上移", lambda: self._移动(-1)), ("下移", lambda: self._移动(1)),
         ):
             ttk.Button(buttons, text=text, command=command, width=9).pack(side="left", padx=(0, 5))
@@ -370,6 +372,18 @@ class 动作列表窗口:
     def _替换(self, index: int, action: 路线动作) -> None:
         self.actions[index] = action
         self._刷新(index)
+
+    def _复制(self) -> None:
+        index = self._选中索引()
+        if index is None:
+            messagebox.showinfo("提示", "请先选择一个动作", parent=self.window)
+            return
+        self.actions.insert(index + 1, deepcopy(self.actions[index]))
+        self._刷新(index + 1)
+
+    def _复制快捷键(self, _event=None) -> str:
+        self._复制()
+        return "break"
 
     def _删除(self) -> None:
         index = self._选中索引()

@@ -359,7 +359,7 @@ class 合并主界面:
         )
         self.btn_cruise_start.pack(side="left", padx=(10, 6))
         self.btn_cruise_stop = ttk.Button(
-            r2, text="停止回放 (Esc)", command=self.stop_cruise, width=14, state="disabled"
+            r2, text="停止回放 (双击 Esc)", command=self.stop_cruise, width=18, state="disabled"
         )
         self.btn_cruise_stop.pack(side="left")
 
@@ -694,6 +694,7 @@ class 合并主界面:
 
         self.cruising = True
         self._cruise_stop.clear()
+        巡航模块.重置esc双击状态(self._cruise_stop)
         self.btn_cruise_start.config(state="disabled")
         self.btn_cruise_stop.config(state="normal")
         self.btn_detect_start.config(state="disabled")
@@ -724,7 +725,7 @@ class 合并主界面:
                 )
                 self._queue.put(("cruise_done", "寻路已结束"))
             except 巡航模块.紧急停止异常:
-                self._queue.put(("cruise_done", "已通过 Esc 停止"))
+                self._queue.put(("cruise_done", "已通过双击 Esc 停止"))
             except Exception as exc:
                 self._queue.put(("cruise_error", str(exc)))
             finally:

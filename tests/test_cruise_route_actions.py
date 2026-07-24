@@ -1,9 +1,49 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import 巡航脚本 as cruise
 from 路线动作 import 路线动作, 路线点, 写入路线文件
+
+
+def test_escape_requires_two_distinct_presses_within_500ms() -> None:
+    detector = cruise.Esc双击检测器(0.5)
+
+    assert not detector.更新(True, 0.0)
+    assert not detector.更新(True, 0.1)
+    assert not detector.更新(False, 0.2)
+    assert detector.更新(True, 0.49)
+
+
+def test_escape_single_press_expires_and_starts_a_new_pair() -> None:
+    detector = cruise.Esc双击检测器(0.5)
+
+    assert not detector.更新(True, 0.0)
+    assert not detector.更新(False, 0.1)
+    assert not detector.更新(False, 0.51)
+    assert not detector.更新(True, 0.6)
+    assert not detector.更新(False, 0.7)
+    assert detector.更新(True, 1.0)
+
+
+def test_escape_stop_event_is_set_only_after_double_press(monkeypatch) -> None:
+    pressed = [True]
+    now = [0.0]
+    stop_event = threading.Event()
+    monkeypatch.setattr(cruise, "_esc双击检测器", cruise.Esc双击检测器(0.5))
+    monkeypatch.setattr(cruise.win32_input, "按键是否按下", lambda _key: pressed[0])
+    monkeypatch.setattr(cruise.time, "monotonic", lambda: now[0])
+
+    assert not cruise.处理esc紧急停止(stop_event)
+    assert not stop_event.is_set()
+    pressed[0] = False
+    now[0] = 0.1
+    assert not cruise.处理esc紧急停止(stop_event)
+    pressed[0] = True
+    now[0] = 0.4
+    assert cruise.处理esc紧急停止(stop_event)
+    assert stop_event.is_set()
 
 
 def test_jsonl_route_keeps_actions_for_cruise(tmp_path: Path) -> None:

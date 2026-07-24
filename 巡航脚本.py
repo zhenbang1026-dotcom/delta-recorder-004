@@ -185,6 +185,52 @@ class 紧急停止异常(RuntimeError):
     pass
 
 
+class Esc双击检测器:
+    def __init__(self, 最大间隔秒数: float = 0.5) -> None:
+        self.最大间隔秒数 = float(最大间隔秒数)
+        self._当前按下 = False
+        self._上次按下时间: float | None = None
+        self._锁 = threading.Lock()
+
+    def 重置(self) -> None:
+        with self._锁:
+            self._当前按下 = False
+            self._上次按下时间 = None
+
+    def 更新(self, 当前按下: bool, 当前时间: float) -> bool:
+        with self._锁:
+            if not 当前按下:
+                self._当前按下 = False
+                if (
+                    self._上次按下时间 is not None
+                    and 当前时间 - self._上次按下时间 > self.最大间隔秒数
+                ):
+                    self._上次按下时间 = None
+                return False
+            if self._当前按下:
+                return False
+            self._当前按下 = True
+            间隔 = None if self._上次按下时间 is None else 当前时间 - self._上次按下时间
+            if 间隔 is not None and 0 <= 间隔 <= self.最大间隔秒数:
+                self._上次按下时间 = None
+                return True
+            self._上次按下时间 = 当前时间
+            return False
+
+
+_esc双击检测器 = Esc双击检测器()
+_esc停止事件 = None
+_esc停止事件锁 = threading.Lock()
+
+
+def 重置esc双击状态(停止事件: threading.Event | None = None) -> None:
+    global _esc停止事件
+
+    with _esc停止事件锁:
+        _esc双击检测器.重置()
+        _esc停止事件 = 停止事件
+
+
 def 计算目标角度(x1: float, y1: float, x2: float, y2: float) -> float:
     dx = x2 - x1
     dy = y2 - y1
@@ -314,9 +360,19 @@ def 格式化日志行(事件: str, **字段) -> str:
 
 
 def 处理esc紧急停止(停止事件: threading.Event | None = None, 根窗口=None) -> bool:
+    global _esc停止事件
+
     已触发 = 停止事件.is_set() if 停止事件 is not None else False
-    if not 已触发 and not win32_input.按键是否按下("esc"):
-        return False
+    if not 已触发:
+        if 停止事件 is not None:
+            with _esc停止事件锁:
+                if 停止事件 is not _esc停止事件:
+                    _esc双击检测器.重置()
+                    _esc停止事件 = 停止事件
+        if not _esc双击检测器.更新(
+            bool(win32_input.按键是否按下("esc")), time.monotonic()
+        ):
+            return False
     if 停止事件 is not None:
         停止事件.set()
     if 根窗口 is not None:
@@ -1129,7 +1185,7 @@ class 巡航控制器:
 
     def _检查紧急停止(self) -> None:
         if 处理esc紧急停止(getattr(self, "停止事件", None)):
-            raise 紧急停止异常("检测到 ESC，已停止巡航")
+            raise 紧急停止异常("检测到双击 ESC，已停止巡航")
 
     def _等待并检查停止(self, 秒数: float) -> None:
         if 秒数 <= 0:
@@ -1690,12 +1746,13 @@ def 后台执行巡航(
     日志函数=None,
     停止事件: threading.Event | None = None,
 ) -> None:
+    重置esc双击状态(停止事件)
     路径文件 = 校验路线文件(路径文件)
     if 延迟秒数 > 0:
         结束时间 = time.monotonic() + 延迟秒数
         while time.monotonic() < 结束时间:
             if 处理esc紧急停止(停止事件):
-                raise 紧急停止异常("检测到 ESC，已停止巡航")
+                raise 紧急停止异常("检测到双击 ESC，已停止巡航")
             time.sleep(min(0.05, max(0.0, 结束时间 - time.monotonic())))
     参数 = 巡航默认参数()
     巡航参数 = {
@@ -1845,7 +1902,7 @@ class Win32执行器:
 
     def _检查紧急停止(self) -> None:
         if 处理esc紧急停止(getattr(self, "停止事件", None)):
-            raise 紧急停止异常("检测到 ESC，已停止巡航")
+            raise 紧急停止异常("检测到双击 ESC，已停止巡航")
 
     def _等待并检查停止(self, 秒数: float) -> None:
         if 秒数 <= 0:
@@ -2094,6 +2151,7 @@ def 启动巡航界面() -> None:
             messagebox.showerror("启动失败", f"角度模式无效: {exc}")
             return
 
+        重置esc双击状态(停止事件)
         开始按钮.config(state="disabled")
         选择按钮.config(state="disabled")
         for w in 角度单选:
@@ -2107,7 +2165,7 @@ def 启动巡航界面() -> None:
                 后台执行巡航(路径文件, 定位器=监视定位器, 停止事件=停止事件)
                 安全派发(lambda: 状态变量.set("寻路已结束"))
             except 紧急停止异常:
-                安全派发(lambda: 状态变量.set("已通过 Esc 停止"))
+                安全派发(lambda: 状态变量.set("已通过双击 Esc 停止"))
             except Exception as exc:
                 安全派发(lambda err=str(exc): messagebox.showerror("寻路失败", err))
                 安全派发(lambda err=str(exc): 状态变量.set(f"寻路失败: {err}"))

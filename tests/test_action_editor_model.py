@@ -2,7 +2,34 @@ from __future__ import annotations
 
 import pytest
 
-from 动作编辑器 import 动作标签, 表单字段, 从表单创建动作
+from 动作编辑器 import 动作列表窗口, 动作标签, 表单字段, 从表单创建动作
+from 路线动作 import 路线动作
+
+
+def test_copy_selected_action_inserts_independent_copy_after_source() -> None:
+    source = 路线动作("key", {"keys": ["w", "f"], "mode": "hold", "duration_ms": 200})
+    window = object.__new__(动作列表窗口)
+    window.actions = [source, 路线动作("wait", {"milliseconds": 500})]
+    window.listbox = type("Listbox", (), {"curselection": lambda self: (0,)})()
+    selected = []
+    window._刷新 = selected.append
+
+    window._复制()
+
+    assert window.actions == [source, source, 路线动作("wait", {"milliseconds": 500})]
+    assert window.actions[1] is not source
+    assert window.actions[1].参数 is not source.参数
+    assert window.actions[1].参数["keys"] is not source.参数["keys"]
+    assert selected == [1]
+
+
+def test_copy_shortcut_runs_copy_and_stops_tk_default_handling() -> None:
+    window = object.__new__(动作列表窗口)
+    calls = []
+    window._复制 = lambda: calls.append("copy")
+
+    assert window._复制快捷键() == "break"
+    assert calls == ["copy"]
 
 
 def test_key_form_builds_ordered_combo() -> None:
