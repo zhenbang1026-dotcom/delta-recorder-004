@@ -15,7 +15,8 @@ from typing import Any, Iterable
 
 支持动作类型 = {
     "key", "wait", "comment", "view", "look", "yolo_interact",
-    "yolo_aim_on", "yolo_aim_off",
+    "yolo_aim_on", "yolo_aim_off", "yolo_aim_once",
+    "image_wait_appear", "image_wait_disappear", "image_click",
 }
 
 
@@ -86,6 +87,9 @@ class 路线动作:
             _整数(p.get("timeout_ms", 5000), "YOLO 超时时间", 最小值=1)
             _整数(p.get("tolerance_px", 12), "对准容差", 最小值=1)
             _整数(p.get("target_y_offset_px", 0), "容器垂直坐标偏差")
+            _整数(p.get("stable_frame_count", 3), "稳定帧数", 最小值=1)
+            if not isinstance(p.get("target_class", ""), str):
+                raise ValueError("目标类别必须是文字")
             _整数(p.get("initial_f_ms", 200), "首次 F 持续时间", 最小值=1)
             _整数(p.get("initial_wait_ms", 300), "首次 F 后等待时间", 最小值=0)
             repeat_ms = _整数(p.get("repeat_f_ms", 50), "循环 F 持续时间", 最小值=1)
@@ -104,6 +108,38 @@ class 路线动作:
                 raise ValueError("置信度必须在 0 到 1 之间")
             _整数(p.get("tolerance_px", 12), "对准容差", 最小值=1)
             _整数(p.get("target_y_offset_px", 0), "容器垂直坐标偏差")
+            if not isinstance(p.get("target_class", ""), str):
+                raise ValueError("目标类别必须是文字")
+        elif self.类型 == "yolo_aim_once":
+            angle = float(p.get("angle"))
+            if not math.isfinite(angle) or not 0 <= angle < 360:
+                raise ValueError("视角角度必须在 0 到 360 度之间")
+            confidence = float(p.get("confidence", 0.5))
+            if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+                raise ValueError("置信度必须在 0 到 1 之间")
+            _整数(p.get("timeout_ms", 5000), "YOLO 超时时间", 最小值=1)
+            _整数(p.get("tolerance_px", 12), "对准容差", 最小值=1)
+            _整数(p.get("target_y_offset_px", 0), "容器垂直坐标偏差")
+            _整数(p.get("stable_frame_count", 3), "稳定帧数", 最小值=1)
+            if not isinstance(p.get("target_class", ""), str):
+                raise ValueError("目标类别必须是文字")
+            if not isinstance(p.get("scan_enabled", True), bool):
+                raise ValueError("多视角扫描开关必须为布尔值")
+            scan_step = float(p.get("scan_step_degrees", 8.0))
+            if not math.isfinite(scan_step) or scan_step <= 0:
+                raise ValueError("扫描视角步长必须大于 0")
+            _整数(p.get("scan_attempts", 4), "扫描次数", 最小值=0)
+        elif self.类型 in {"image_wait_appear", "image_wait_disappear", "image_click"}:
+            if not isinstance(p.get("template_path"), str) or not p["template_path"].strip():
+                raise ValueError("模板图片路径不能为空")
+            confidence = float(p.get("confidence", 0.85))
+            if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+                raise ValueError("识图置信度必须在 0 到 1 之间")
+            _整数(p.get("timeout_ms", 5000), "识图超时时间", 最小值=1)
+            _整数(p.get("interval_ms", 100), "识图间隔", 最小值=1)
+            if self.类型 == "image_click":
+                _整数(p.get("click_offset_x", 0), "点击 X 偏移")
+                _整数(p.get("click_offset_y", 0), "点击 Y 偏移")
         return self
 
     def to_dict(self) -> dict[str, Any]:

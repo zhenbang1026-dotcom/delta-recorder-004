@@ -38,9 +38,9 @@ def test_speed_and_acceleration_are_limited_on_both_axes():
     目标X, 目标Y = 控制器.更新误差(1000, -1000, 当前时间=0.0)
     控制器.推进一次(0.008, 当前时间=0.008)
 
-    assert (目标X, 目标Y) == (9000.0, -9000.0)
-    assert math.isclose(控制器.当前速度X, 432.0, abs_tol=1e-9)
-    assert math.isclose(控制器.当前速度Y, -432.0, abs_tol=1e-9)
+    assert (目标X, 目标Y) == (3500.0, -3500.0)
+    assert math.isclose(控制器.当前速度X, 192.0, abs_tol=1e-9)
+    assert math.isclose(控制器.当前速度Y, -192.0, abs_tol=1e-9)
 
 
 def test_each_axis_reverses_direction_through_zero():
@@ -69,19 +69,42 @@ def test_each_axis_reverses_direction_through_zero():
     assert any(math.isclose(value, 0.0, abs_tol=1e-9) for value in Y速度序列[:首个Y正值])
 
 
-def test_watchdog_clears_stale_error_and_decelerates():
+def test_watchdog_clears_stale_error_without_inertial_slide():
     控制器 = YOLO连续对准控制器(假输入模块(), 自动启动=False, 时钟=lambda: 0.0)
     控制器.更新误差(1000, -1000, 当前时间=0.0)
     控制器.推进一次(0.008, 当前时间=0.008)
-    原速度X = 控制器.当前速度X
-    原速度Y = 控制器.当前速度Y
-
     控制器.推进一次(0.008, 当前时间=0.121)
 
     assert 控制器.目标速度X == 0.0
     assert 控制器.目标速度Y == 0.0
-    assert abs(控制器.当前速度X) < abs(原速度X)
-    assert abs(控制器.当前速度Y) < abs(原速度Y)
+    assert 控制器.当前速度X == 0.0
+    assert 控制器.当前速度Y == 0.0
+
+
+def test_aligned_or_lost_target_stops_immediately_and_discards_pixel_residual():
+    输入 = 假输入模块()
+    控制器 = YOLO连续对准控制器(
+        输入, 自动启动=False, 时钟=lambda: 0.0, 看门狗秒数=10.0
+    )
+    控制器.更新误差(1000, 1000, 当前时间=0.0)
+    控制器.推进一次(0.008, 当前时间=0.008)
+
+    控制器.更新误差(0, 0, 当前时间=0.009)
+    assert 控制器.当前速度X == 0.0
+    assert 控制器.当前速度Y == 0.0
+    assert 控制器.推进一次(0.008, 当前时间=0.017) == (0, 0)
+
+
+def test_start_and_stop_thresholds_prevent_deadband_chatter():
+    控制器 = YOLO连续对准控制器(
+        假输入模块(), 自动启动=False, 时钟=lambda: 0.0, 看门狗秒数=10.0
+    )
+
+    assert 控制器.更新误差(15, 0, 当前时间=0.0) == (0.0, 0.0)
+    assert 控制器.更新误差(21, 0, 当前时间=0.01)[0] > 0
+    assert 控制器.更新误差(12, 0, 当前时间=0.02)[0] > 0
+    assert 控制器.更新误差(7, 0, 当前时间=0.03) == (0.0, 0.0)
+    assert 控制器.当前速度X == 0.0
 
 
 def test_stop_reclaims_background_thread_without_late_movement():

@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 import 截图模块
-from YOLO物资动作 import letterbox_到模型输入, 物资检测区域客户区
+from YOLO物资动作 import letterbox_到模型输入, 物资检测区域客户区, 计算自适应检测参数
 
 
 模型类别 = [
@@ -161,12 +161,17 @@ class 物资检测器:
         self.时钟 = 时钟
         self.近距离检测间隔秒数 = max(0.0, float(近距离检测间隔秒数))
         self._上次近距离检测时间 = -float("inf")
+        self._近距离模式锁定 = False
+        self._近距离未命中开始时间: float | None = None
         self.session = None
         self.执行器 = "未初始化"
         self._已运行时回退 = False
         self.最近截图 = None
         self.最近检测结果: list[dict[str, Any]] = []
         self.最近检测模式 = "正常"
+        self.最近耗时毫秒 = 0.0
+        self.推荐检测间隔秒数 = 0.02
+        self.推荐看门狗秒数 = 0.2
         self._加载模型()
 
     def _日志(self, 事件: str, **字段: Any) -> None:
@@ -334,17 +339,9 @@ class 物资检测器:
         started = time.perf_counter()
         frame_bgr, backend = 截图模块.grab_bbox_bgr((left, top, right, bottom))
         self.最近截图 = frame_bgr.copy()
-        self.最近检测模式 = "正常"
-        result = self._检测画面(
-            frame_bgr,
-            offset_x=int(left),
-            offset_y=int(top),
-            confidence_threshold=float(置信度阈值),
-            iou_threshold=float(IOU阈值),
-        )
         当前时间 = self.时钟()
-        if not result and 当前时间 - self._上次近距离检测时间 >= self.近距离检测间隔秒数:
-            self._上次近距离检测时间 = 当前时间
+
+        def 近距离检测() -> list[dict[str, Any]]:
             close_frame, transform = 创建近距离缩放画面(frame_bgr)
             close_detections = self._检测画面(
                 close_frame,
@@ -353,7 +350,7 @@ class 物资检测器:
                 confidence_threshold=float(置信度阈值),
                 iou_threshold=float(IOU阈值),
             )
-            result = 还原近距离检测结果(
+            return 还原近距离检测结果(
                 close_detections,
                 transform,
                 int(left),
@@ -361,14 +358,48 @@ class 物资检测器:
                 frame_bgr.shape[1],
                 frame_bgr.shape[0],
             )
+
+        if getattr(self, "_近距离模式锁定", False):
             self.最近检测模式 = "近距离"
+            result = 近距离检测()
+            if result:
+                self._近距离未命中开始时间 = None
+            elif getattr(self, "_近距离未命中开始时间", None) is None:
+                self._近距离未命中开始时间 = 当前时间
+            elif 当前时间 - self._近距离未命中开始时间 >= 1.0:
+                self._近距离模式锁定 = False
+                self._近距离未命中开始时间 = None
+                self._上次近距离检测时间 = 当前时间
+        else:
+            self.最近检测模式 = "正常"
+            result = self._检测画面(
+                frame_bgr,
+                offset_x=int(left),
+                offset_y=int(top),
+                confidence_threshold=float(置信度阈值),
+                iou_threshold=float(IOU阈值),
+            )
+            if (
+                not result
+                and 当前时间 - self._上次近距离检测时间 >= self.近距离检测间隔秒数
+            ):
+                self._上次近距离检测时间 = 当前时间
+                result = 近距离检测()
+                self.最近检测模式 = "近距离"
+                if result:
+                    self._近距离模式锁定 = True
+                    self._近距离未命中开始时间 = None
         self.最近检测结果 = result
+        self.最近耗时毫秒 = (time.perf_counter() - started) * 1000
+        self.推荐检测间隔秒数, self.推荐看门狗秒数 = 计算自适应检测参数(
+            self.最近耗时毫秒 / 1000
+        )
         self._日志(
             "yolo_inference",
             执行器=self.执行器,
             截图后端=backend,
             检测模式=self.最近检测模式,
-            耗时毫秒=round((time.perf_counter() - started) * 1000, 2),
+            耗时毫秒=round(self.最近耗时毫秒, 2),
             目标数=len(result),
         )
         return result

@@ -69,7 +69,7 @@ def test_detector_throttles_close_range_fallback_to_200ms(monkeypatch) -> None:
     post_results = iter(
         [
             [],
-            [{"x1": 120, "y1": 70, "x2": 220, "y2": 150, "置信度": 0.9}],
+            [],
             [],
             [],
             [{"x1": 120, "y1": 70, "x2": 220, "y2": 150, "置信度": 0.9}],
@@ -91,7 +91,7 @@ def test_detector_throttles_close_range_fallback_to_200ms(monkeypatch) -> None:
         lambda _bbox: (np.zeros((256, 448, 3), dtype=np.uint8), "test"),
     )
 
-    assert detector.检测一次(500, 300, 948, 556)
+    assert detector.检测一次(500, 300, 948, 556) == []
     assert detector.最近检测模式 == "近距离"
     assert len(inference_calls) == 2
 
@@ -128,6 +128,41 @@ def test_detector_skips_close_range_fallback_when_normal_detection_succeeds(monk
     assert detector.检测一次(500, 300, 948, 556) == expected
     assert detector.最近检测模式 == "正常"
     assert len(inference_calls) == 1
+
+
+def test_close_range_hit_locks_mode_until_one_second_of_continuous_misses(monkeypatch) -> None:
+    now = [0.0]
+    detector = object.__new__(物资检测器)
+    detector.输入高度 = 256
+    detector.输入宽度 = 448
+    detector.执行器 = "CPU"
+    detector.时钟 = lambda: now[0]
+    detector.近距离检测间隔秒数 = 0.2
+    detector._上次近距离检测时间 = -float("inf")
+    detector._近距离模式锁定 = False
+    detector._近距离未命中开始时间 = None
+    detector._日志 = lambda *_args, **_kwargs: None
+    calls = []
+    results = iter([[], [{"x1": 120, "y1": 70, "x2": 220, "y2": 150, "置信度": 0.9}], [], [], []])
+    detector._推理 = lambda tensor: calls.append(tensor) or np.empty((1, 18, 2352))
+    detector._后处理 = lambda *_args, **_kwargs: next(results)
+    monkeypatch.setattr(
+        material_detection.截图模块,
+        "grab_bbox_bgr",
+        lambda _bbox: (np.zeros((256, 448, 3), dtype=np.uint8), "test"),
+    )
+
+    assert detector.检测一次(500, 300, 948, 556)
+    assert detector._近距离模式锁定
+    now[0] = 0.5
+    assert detector.检测一次(500, 300, 948, 556) == []
+    now[0] = 1.4
+    assert detector.检测一次(500, 300, 948, 556) == []
+    assert detector._近距离模式锁定
+    now[0] = 1.51
+    assert detector.检测一次(500, 300, 948, 556) == []
+    assert not detector._近距离模式锁定
+    assert len(calls) == 5
 
 
 def test_material_roi_matches_tested_best_model_range() -> None:

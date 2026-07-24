@@ -115,4 +115,4 @@ def test_persistent_service_expands_search_after_one_second_and_restores_local_r
     assert expanded_calls[2][0] - expanded_calls[1][0] < 0.5
     assert calls[calls.index(expanded_calls[2]) + 1][1] == local_roi[:4]
     assert (250.0, -10.0) in records
-    assert (30.0, -10.0) in records
+    assert (140.0, -10.0) in records

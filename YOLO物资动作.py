@@ -2,8 +2,12 @@
 """best.onnx 的无设备依赖算法工具。"""
 from __future__ import annotations
 
+import math
+import statistics
+import time
+from collections import deque
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable
 
 import cv2
 import numpy as np
@@ -94,3 +98,113 @@ def 选择综合目标(
             best_score = score
             best = candidate
     return best
+
+
+def 计算自适应检测参数(
+    推理耗时秒数: float,
+    基础检测间隔秒数: float = 0.02,
+) -> tuple[float, float]:
+    """按推理耗时放宽检测间隔和看门狗，兼容较慢显卡与 CPU。"""
+    inference = max(0.0, float(推理耗时秒数))
+    interval = max(float(基础检测间隔秒数), min(0.12, inference * 0.25))
+    watchdog = max(0.2, min(1.5, inference * 2.5 + interval))
+    return interval, watchdog
+
+
+def 生成扫描视角(记录视角: float, 步长度数: float, 尝试次数: int) -> list[float]:
+    base = float(记录视角) % 360
+    step = abs(float(步长度数))
+    result: list[float] = []
+    for index in range(max(0, int(尝试次数))):
+        multiplier = index // 2 + 1
+        direction = 1 if index % 2 == 0 else -1
+        result.append((base + direction * multiplier * step) % 360)
+    return result
+
+
+class YOLO目标跟踪器:
+    """锁定同一类别目标，并对最近几帧中心点做中位数滤波。"""
+
+    def __init__(
+        self,
+        *,
+        目标类别: str = "",
+        滤波帧数: int = 3,
+        锁定秒数: float = 0.5,
+        时钟: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.目标类别 = str(目标类别).strip()
+        self.滤波帧数 = max(1, int(滤波帧数))
+        self.锁定秒数 = max(0.0, float(锁定秒数))
+        self.时钟 = 时钟
+        self._锁定类别: str | None = None
+        self._最后中心: tuple[float, float] | None = None
+        self._最后命中时间: float | None = None
+        self._中心历史: deque[tuple[float, float]] = deque(maxlen=self.滤波帧数)
+
+    def 重置(self) -> None:
+        self._锁定类别 = None
+        self._最后中心 = None
+        self._最后命中时间 = None
+        self._中心历史.clear()
+
+    def _锁定仍有效(self, 当前时间: float) -> bool:
+        return bool(
+            self._锁定类别 is not None
+            and self._最后命中时间 is not None
+            and 当前时间 - self._最后命中时间 <= self.锁定秒数
+        )
+
+    def 选择(
+        self,
+        candidates: Iterable[dict],
+        center: tuple[float, float],
+        confidence_threshold: float = 0.5,
+        *,
+        当前时间: float | None = None,
+    ) -> dict | None:
+        now = float(self.时钟() if 当前时间 is None else 当前时间)
+        available = [
+            item
+            for item in candidates
+            if float(item.get("置信度", 0.0)) >= confidence_threshold
+            and (not self.目标类别 or str(item.get("类别名称", "")) == self.目标类别)
+        ]
+        locked = self._锁定仍有效(now)
+        if not locked and self._锁定类别 is not None:
+            self.重置()
+
+        target = None
+        if locked:
+            same_class = [
+                item for item in available if str(item.get("类别名称", "")) == self._锁定类别
+            ]
+            if same_class:
+                reference = self._最后中心 or center
+                target = min(
+                    same_class,
+                    key=lambda item: math.hypot(
+                        float(item["中心X"]) - reference[0],
+                        float(item["中心Y"]) - reference[1],
+                    ),
+                )
+        else:
+            target = 选择综合目标(available, center, confidence_threshold)
+
+        if target is None:
+            return None
+
+        target = dict(target)
+        raw_center = (float(target["中心X"]), float(target["中心Y"]))
+        target_class = str(target.get("类别名称", ""))
+        if self._锁定类别 is not None and target_class != self._锁定类别:
+            self._中心历史.clear()
+        self._锁定类别 = target_class
+        self._最后中心 = raw_center
+        self._最后命中时间 = now
+        self._中心历史.append(raw_center)
+        target["原始中心X"] = raw_center[0]
+        target["原始中心Y"] = raw_center[1]
+        target["中心X"] = float(statistics.median(item[0] for item in self._中心历史))
+        target["中心Y"] = float(statistics.median(item[1] for item in self._中心历史))
+        return target

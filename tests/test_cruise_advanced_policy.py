@@ -109,6 +109,49 @@ def test_persistent_yolo_service_is_shared_across_route_action_batches_and_stopp
     assert service.关闭次数 == 1
 
 
+def test_yolo_aim_once_loads_detector_and_passes_expanded_roi_to_action_executor():
+    detector = SimpleNamespace(释放资源=lambda: None)
+    received = []
+    expanded = lambda: (-300, -200, 500, 400, 100, 100)
+
+    class 假路线动作执行器:
+        def __init__(self, _input, **kwargs):
+            received.append(kwargs)
+
+        def 执行动作列表(self, actions):
+            return [True for _action in actions]
+
+    executor = cruise.Win32执行器(
+        输入模块=假输入模块(),
+        连续控制器工厂=lambda _input, **_kwargs: 假连续控制器(),
+        路线动作执行器工厂=假路线动作执行器,
+        YOLO检测器工厂=lambda: detector,
+        获取检测区域函数=lambda: (0, 0, 200, 200, 100, 100),
+        获取扩大检测区域函数=expanded,
+    )
+    action = 路线动作(
+        "yolo_aim_once",
+        {
+            "angle": 90.0,
+            "confidence": 0.5,
+            "timeout_ms": 5000,
+            "tolerance_px": 12,
+            "target_y_offset_px": 0,
+            "stable_frame_count": 3,
+            "target_class": "",
+            "scan_enabled": False,
+            "scan_step_degrees": 8.0,
+            "scan_attempts": 4,
+        },
+    )
+
+    assert executor.执行路线动作((action,)) == [True]
+    executor.停止()
+
+    assert received[0]["yolo检测器"] is detector
+    assert received[0]["获取扩大检测区域"] is expanded
+
+
 @pytest.mark.parametrize(
     ("mode", "输入倍率", "期望倍率"),
     [("legacy", "2.0", 2.0), ("text", 0.1, 0.5)],

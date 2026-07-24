@@ -19,6 +19,10 @@ from 路线动作 import 路线动作, 路线点, 读取路线文件, 写入路�
     "yolo_interact": "YOLO 识别并交互",
     "yolo_aim_on": "YOLO 识别并对准开",
     "yolo_aim_off": "YOLO 识别并对准关",
+    "yolo_aim_once": "YOLO 识别目标完全对准后退出",
+    "image_wait_appear": "等待图片出现",
+    "image_wait_disappear": "等待图片消失",
+    "image_click": "识图点击",
 }
 标签动作 = {label: action_type for action_type, label in 动作标签.items()}
 
@@ -35,6 +39,15 @@ def _浮点数(value, name: str) -> float:
         return float(str(value).strip())
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name}必须是数字") from exc
+
+
+def _布尔值(value, name: str) -> bool:
+    result = {"是": True, "否": False, "true": True, "false": False}.get(
+        str(value).strip().lower()
+    )
+    if result is None:
+        raise ValueError(f"{name}必须选择是或否")
+    return result
 
 
 def 从表单创建动作(action_type: str, values: dict[str, object]) -> 路线动作:
@@ -91,6 +104,8 @@ def 从表单创建动作(action_type: str, values: dict[str, object]) -> 路线
                 "target_y_offset_px": _整数(
                     values.get("target_y_offset_px", 0), "容器垂直坐标偏差"
                 ),
+                "stable_frame_count": _整数(values.get("stable_frame_count", 3), "稳定帧数"),
+                "target_class": str(values.get("target_class", "")).strip(),
                 "initial_f_ms": _整数(values.get("initial_f_ms"), "首次 F 持续时间"),
                 "initial_wait_ms": _整数(values.get("initial_wait_ms"), "首次 F 后等待"),
                 "repeat_f_ms": _整数(values.get("repeat_f_ms"), "循环 F 持续时间"),
@@ -109,10 +124,42 @@ def 从表单创建动作(action_type: str, values: dict[str, object]) -> 路线
                 "target_y_offset_px": _整数(
                     values.get("target_y_offset_px", 0), "容器垂直坐标偏差"
                 ),
+                "target_class": str(values.get("target_class", "")).strip(),
             },
         )
     elif action_type == "yolo_aim_off":
         action = 路线动作("yolo_aim_off", {})
+    elif action_type == "yolo_aim_once":
+        action = 路线动作(
+            "yolo_aim_once",
+            {
+                "angle": _浮点数(values.get("angle"), "视角角度"),
+                "confidence": _浮点数(values.get("confidence"), "置信度"),
+                "timeout_ms": _整数(values.get("timeout_ms"), "检测超时"),
+                "tolerance_px": _整数(values.get("tolerance_px"), "对准容差"),
+                "target_y_offset_px": _整数(values.get("target_y_offset_px", 0), "目标 Y 偏移"),
+                "stable_frame_count": _整数(values.get("stable_frame_count", 3), "稳定帧数"),
+                "target_class": str(values.get("target_class", "")).strip(),
+                "scan_enabled": _布尔值(values.get("scan_enabled", "是"), "多视角扫描"),
+                "scan_step_degrees": _浮点数(values.get("scan_step_degrees", 8), "扫描视角步长"),
+                "scan_attempts": _整数(values.get("scan_attempts", 4), "扫描次数"),
+            },
+        )
+    elif action_type in {"image_wait_appear", "image_wait_disappear", "image_click"}:
+        params = {
+            "template_path": str(values.get("template_path", "")).strip(),
+            "confidence": _浮点数(values.get("confidence", 0.85), "识图置信度"),
+            "timeout_ms": _整数(values.get("timeout_ms", 5000), "识图超时"),
+            "interval_ms": _整数(values.get("interval_ms", 100), "识图间隔"),
+        }
+        if action_type == "image_click":
+            params.update(
+                {
+                    "click_offset_x": _整数(values.get("click_offset_x", 0), "点击 X 偏移"),
+                    "click_offset_y": _整数(values.get("click_offset_y", 0), "点击 Y 偏移"),
+                }
+            )
+        action = 路线动作(action_type, params)
     else:
         raise ValueError(f"不支持的动作类型: {action_type}")
     return action.校验()
@@ -143,6 +190,15 @@ def 动作摘要(action: 路线动作) -> str:
         )
     if action.类型 == "yolo_aim_off":
         return "YOLO 持续对准关"
+    if action.类型 == "yolo_aim_once":
+        target_class = p.get("target_class") or "任意类别"
+        return (
+            f"YOLO 完全对准后退出（{target_class}，视角 {float(p.get('angle', 0)):.2f}°，"
+            f"Y偏移 {p.get('target_y_offset_px', 0)}px，稳定 {p.get('stable_frame_count', 3)} 帧）"
+        )
+    if action.类型 in {"image_wait_appear", "image_wait_disappear", "image_click"}:
+        label = 动作标签[action.类型]
+        return f"{label}：{p.get('template_path', '')}，阈值 {float(p.get('confidence', 0.85)):.2f}"
     return (
         f"YOLO 对准（视角 {float(p.get('angle', 0)):.2f}°），W {p.get('w_duration_ms')}ms，"
         f"循环 F {p.get('f_count')} 次，容器Y偏差 {p.get('target_y_offset_px', 0)}px"
@@ -174,6 +230,8 @@ def 动作摘要(action: 路线动作) -> str:
         ("timeout_ms", "识别/对准超时（毫秒）", "5000", None),
         ("tolerance_px", "X/Y 对准容差（像素）", "12", None),
         ("target_y_offset_px", "容器垂直坐标偏差（像素）", "0", None),
+        ("stable_frame_count", "连续稳定帧数", "3", None),
+        ("target_class", "目标类别（留空为任意）", "", None),
         ("initial_f_ms", "首次 F 持续时间（毫秒）", "200", None),
         ("initial_wait_ms", "首次 F 后等待（毫秒）", "300", None),
         ("w_duration_ms", "W 持续时间（毫秒）", "5000", None),
@@ -186,8 +244,41 @@ def 动作摘要(action: 路线动作) -> str:
         ("confidence", "置信度阈值", "0.50", None),
         ("tolerance_px", "X/Y 对准容差（像素）", "12", None),
         ("target_y_offset_px", "容器垂直坐标偏差（像素）", "0", None),
+        ("target_class", "目标类别（留空为任意）", "", None),
     ],
     "yolo_aim_off": [],
+    "yolo_aim_once": [
+        ("angle", "先恢复水平视角（度）", "0", None),
+        ("confidence", "置信度阈值", "0.50", None),
+        ("timeout_ms", "识别/对准超时（毫秒）", "5000", None),
+        ("tolerance_px", "完全对准容差（像素）", "12", None),
+        ("target_y_offset_px", "目标垂直坐标偏差（像素）", "0", None),
+        ("stable_frame_count", "连续稳定帧数", "3", None),
+        ("target_class", "目标类别（留空为任意）", "", None),
+        ("scan_enabled", "丢失时多视角扫描", "是", ("是", "否")),
+        ("scan_step_degrees", "每次扫描角度（度）", "8", None),
+        ("scan_attempts", "最多扫描次数", "4", None),
+    ],
+    "image_wait_appear": [
+        ("template_path", "模板图片", "", None),
+        ("confidence", "匹配阈值", "0.85", None),
+        ("timeout_ms", "等待超时（毫秒）", "5000", None),
+        ("interval_ms", "检测间隔（毫秒）", "100", None),
+    ],
+    "image_wait_disappear": [
+        ("template_path", "模板图片", "", None),
+        ("confidence", "匹配阈值", "0.85", None),
+        ("timeout_ms", "等待超时（毫秒）", "5000", None),
+        ("interval_ms", "检测间隔（毫秒）", "100", None),
+    ],
+    "image_click": [
+        ("template_path", "模板图片", "", None),
+        ("confidence", "匹配阈值", "0.85", None),
+        ("timeout_ms", "识别超时（毫秒）", "5000", None),
+        ("interval_ms", "检测间隔（毫秒）", "100", None),
+        ("click_offset_x", "点击 X 偏移（像素）", "0", None),
+        ("click_offset_y", "点击 Y 偏移（像素）", "0", None),
+    ],
 }
 
 
@@ -206,7 +297,7 @@ class 动作参数窗口:
         self.完成回调 = 完成回调
         self.window = tk.Toplevel(parent)
         self.window.title("编辑动作" if action else "添加动作")
-        self.window.geometry("600x560")
+        self.window.geometry("620x700")
         self.window.transient(parent)
         self.window.protocol("WM_DELETE_WINDOW", self._关闭)
         self.window.grab_set()
@@ -240,6 +331,8 @@ class 动作参数窗口:
             return "长按" if value == "hold" else "单击"
         if key == "direction":
             return "低头" if value == "down" else "抬头"
+        if key == "scan_enabled":
+            return "是" if bool(value) else "否"
         if key == "keys" and isinstance(value, (list, tuple)):
             return "+".join(str(item) for item in value)
         return str(value)
@@ -262,11 +355,24 @@ class 动作参数窗口:
                 ttk.Button(self.form, text="记录当前视角", command=self._记录当前视角).grid(
                     row=row, column=2, padx=(6, 0), pady=5
                 )
+            elif key == "template_path":
+                ttk.Button(self.form, text="选择图片", command=self._选择模板图片).grid(
+                    row=row, column=2, padx=(6, 0), pady=5
+                )
         self.form.columnconfigure(1, weight=1)
         self.action = None
 
     def _记录当前视角(self) -> None:
         self.字段变量["angle"].set(f"{self.获取当前角度():.2f}")
+
+    def _选择模板图片(self) -> None:
+        selected = filedialog.askopenfilename(
+            parent=self.window,
+            title="选择识图模板",
+            filetypes=[("图片", "*.png *.jpg *.jpeg *.bmp"), ("所有文件", "*.*")],
+        )
+        if selected:
+            self.字段变量["template_path"].set(selected)
 
     def _保存(self) -> None:
         try:
@@ -301,6 +407,7 @@ class 动作列表窗口:
         获取当前角度: Callable[[], float],
         完成回调: Callable[[tuple[路线动作, ...]], None],
         取消回调: Callable[[], None] | None = None,
+        测试回调: Callable[[路线动作], None] | None = None,
         title: str = "路线动作",
     ) -> None:
         self.parent = parent
@@ -308,6 +415,7 @@ class 动作列表窗口:
         self.获取当前角度 = 获取当前角度
         self.完成回调 = 完成回调
         self.取消回调 = 取消回调
+        self.测试回调 = 测试回调
         self.window = tk.Toplevel(parent)
         self.window.title(title)
         self.window.geometry("760x460")
@@ -328,6 +436,10 @@ class 动作列表窗口:
             ("上移", lambda: self._移动(-1)), ("下移", lambda: self._移动(1)),
         ):
             ttk.Button(buttons, text=text, command=command, width=9).pack(side="left", padx=(0, 5))
+        if self.测试回调 is not None:
+            ttk.Button(buttons, text="测试选中动作", command=self._测试, width=14).pack(
+                side="left", padx=(4, 0)
+            )
         ttk.Button(buttons, text="完成", command=self._完成, width=10).pack(side="right")
         ttk.Button(buttons, text="取消", command=self._取消, width=10).pack(side="right", padx=5)
         self._刷新()
@@ -385,6 +497,14 @@ class 动作列表窗口:
         self._复制()
         return "break"
 
+    def _测试(self) -> None:
+        index = self._选中索引()
+        if index is None:
+            messagebox.showinfo("提示", "请先选择一个动作", parent=self.window)
+            return
+        if self.测试回调 is not None:
+            self.测试回调(self.actions[index])
+
     def _删除(self) -> None:
         index = self._选中索引()
         if index is not None:
@@ -423,11 +543,19 @@ class 动作列表窗口:
 
 
 class 路线编辑窗口:
-    def __init__(self, parent, source: str | Path, *, 保存回调: Callable[[Path], None]) -> None:
+    def __init__(
+        self,
+        parent,
+        source: str | Path,
+        *,
+        保存回调: Callable[[Path], None],
+        测试回调: Callable[[路线动作], None] | None = None,
+    ) -> None:
         self.parent = parent
         self.source = Path(source)
         self.points = 读取路线文件(self.source)
         self.保存回调 = 保存回调
+        self.测试回调 = 测试回调
         self.window = tk.Toplevel(parent)
         self.window.title("编辑已保存路线动作（坐标只读）")
         self.window.geometry("820x540")
@@ -471,6 +599,7 @@ class 路线编辑窗口:
             actions=point.actions,
             获取当前角度=lambda p=point: p.angle,
             完成回调=lambda actions, i=index: self._替换动作(i, actions),
+            测试回调=self.测试回调,
             title=f"编辑第 {index + 1} 个路线点动作",
         )
 

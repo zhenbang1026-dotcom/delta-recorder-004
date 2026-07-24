@@ -11,10 +11,12 @@ class YOLO连续对准控制器:
         输入模块,
         *,
         tick秒数: float = 0.008,
-        比例增益: float = 40.0,
-        最大速度: float = 9000.0,
-        最大加速度: float = 54000.0,
+        比例增益: float = 18.0,
+        最大速度: float = 3500.0,
+        最大加速度: float = 24000.0,
         对准容差: float = 12.0,
+        启动阈值: float = 20.0,
+        停止阈值: float = 8.0,
         看门狗秒数: float = 0.12,
         自动启动: bool = True,
         时钟=time.monotonic,
@@ -25,6 +27,10 @@ class YOLO连续对准控制器:
         self.最大速度 = abs(float(最大速度))
         self.最大加速度 = abs(float(最大加速度))
         self.对准容差 = abs(float(对准容差))
+        self.启动阈值 = abs(float(启动阈值))
+        self.停止阈值 = abs(float(停止阈值))
+        if self.停止阈值 >= self.启动阈值:
+            raise ValueError("停止阈值必须小于启动阈值")
         self.看门狗秒数 = max(0.0, float(看门狗秒数))
         self._时钟 = 时钟
         self._锁 = threading.Lock()
@@ -36,6 +42,8 @@ class YOLO连续对准控制器:
         self._当前速度Y = 0.0
         self._像素余数X = 0.0
         self._像素余数Y = 0.0
+        self._X正在修正 = False
+        self._Y正在修正 = False
         self._最后更新时间 = float(self._时钟())
         if 自动启动:
             self._线程 = threading.Thread(target=self._运行, name="YOLO连续对准", daemon=True)
@@ -65,19 +73,57 @@ class YOLO连续对准控制器:
     def 线程存活(self) -> bool:
         return self._线程 is not None and self._线程.is_alive()
 
-    def _计算目标速度(self, 误差: float) -> float:
-        if abs(误差) <= self.对准容差:
-            return 0.0
+    def _计算目标速度(self, 误差: float, 正在修正: bool) -> tuple[float, bool]:
+        绝对误差 = abs(误差)
+        if 正在修正:
+            if 绝对误差 <= self.停止阈值:
+                return 0.0, False
+        elif 绝对误差 < self.启动阈值:
+            return 0.0, False
+        else:
+            正在修正 = True
         速度 = 误差 * self.比例增益
-        return max(-self.最大速度, min(self.最大速度, 速度))
+        return max(-self.最大速度, min(self.最大速度, 速度)), 正在修正
+
+    def _清零X(self) -> None:
+        self._目标速度X = 0.0
+        self._当前速度X = 0.0
+        self._像素余数X = 0.0
+        self._X正在修正 = False
+
+    def _清零Y(self) -> None:
+        self._目标速度Y = 0.0
+        self._当前速度Y = 0.0
+        self._像素余数Y = 0.0
+        self._Y正在修正 = False
+
+    def _全部清零(self) -> None:
+        self._清零X()
+        self._清零Y()
+
+    def 清零(self) -> None:
+        with self._锁:
+            self._全部清零()
+
+    def 更新看门狗(self, 秒数: float) -> None:
+        with self._锁:
+            self.看门狗秒数 = max(0.0, float(秒数))
 
     def 更新误差(
         self, 误差X: float, 误差Y: float, *, 当前时间: float | None = None
     ) -> tuple[float, float]:
         当前时间 = float(self._时钟() if 当前时间 is None else 当前时间)
         with self._锁:
-            self._目标速度X = self._计算目标速度(float(误差X))
-            self._目标速度Y = self._计算目标速度(float(误差Y))
+            self._目标速度X, self._X正在修正 = self._计算目标速度(
+                float(误差X), self._X正在修正
+            )
+            self._目标速度Y, self._Y正在修正 = self._计算目标速度(
+                float(误差Y), self._Y正在修正
+            )
+            if not self._X正在修正:
+                self._清零X()
+            if not self._Y正在修正:
+                self._清零Y()
             self._最后更新时间 = 当前时间
             return self._目标速度X, self._目标速度Y
 
@@ -102,8 +148,7 @@ class YOLO连续对准控制器:
         当前时间 = float(self._时钟() if 当前时间 is None else 当前时间)
         with self._锁:
             if 当前时间 - self._最后更新时间 >= self.看门狗秒数:
-                self._目标速度X = 0.0
-                self._目标速度Y = 0.0
+                self._全部清零()
 
             目标速度X = self._目标速度X
             目标速度Y = self._目标速度Y
@@ -143,8 +188,7 @@ class YOLO连续对准控制器:
 
     def 停止(self) -> None:
         with self._锁:
-            self._目标速度X = 0.0
-            self._目标速度Y = 0.0
+            self._全部清零()
         self._停止事件.set()
         if self._线程 is not None and self._线程 is not threading.current_thread():
             self._线程.join()

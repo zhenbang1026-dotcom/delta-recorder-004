@@ -4,7 +4,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from YOLO物资动作 import 选择综合目标
+from YOLO物资动作 import YOLO目标跟踪器
 from YOLO连续对准 import YOLO连续对准控制器
 
 
@@ -20,7 +20,7 @@ class YOLO持续对准服务:
         状态函数: Callable[..., Any] | None = None,
         YOLO对准控制器工厂: Callable[..., Any] = YOLO连续对准控制器,
         获取扩大检测区域: Callable[[], tuple[int, int, int, int, float, float]] | None = None,
-        检测间隔秒数: float = 0.05,
+        检测间隔秒数: float = 0.02,
         时钟: Callable[[], float] = time.monotonic,
     ) -> None:
         self.输入模块 = 输入模块
@@ -111,6 +111,11 @@ class YOLO持续对准服务:
         confidence = float(参数.get("confidence", 0.5))
         tolerance = int(参数.get("tolerance_px", 12))
         target_y_offset = int(参数.get("target_y_offset_px", 0))
+        跟踪器 = YOLO目标跟踪器(
+            目标类别=str(参数.get("target_class", "")),
+            时钟=self.时钟,
+        )
+        稳定帧 = 0
         未命中开始时间: float | None = None
         下次扩大搜索时间 = 0.0
         正在扩大跟踪 = False
@@ -139,7 +144,12 @@ class YOLO持续对准服务:
                     detections = self.yolo检测器.检测一次(left, top, right, bottom)
                     if 本次停止事件.is_set() or self._全局已停止():
                         break
-                    target = 选择综合目标(detections, (center_x, center_y), confidence)
+                    target = 跟踪器.选择(
+                        detections,
+                        (center_x, center_y),
+                        confidence,
+                        当前时间=self.时钟(),
+                    )
                     frame = getattr(self.yolo检测器, "最近截图", None)
                     if frame is not None:
                         try:
@@ -162,6 +172,7 @@ class YOLO持续对准服务:
                     )
                     if target is None:
                         控制器.更新误差(0.0, 0.0)
+                        稳定帧 = 0
                         if 未命中开始时间 is None:
                             未命中开始时间 = self.时钟()
                         if 使用扩大区域:
@@ -169,8 +180,8 @@ class YOLO持续对准服务:
                     else:
                         dx = float(target["中心X"]) - center_x
                         dy = float(target["中心Y"]) + target_y_offset - center_y
-                        target_x = float(target["中心X"])
-                        target_y = float(target["中心Y"])
+                        target_x = float(target.get("原始中心X", target["中心X"]))
+                        target_y = float(target.get("原始中心Y", target["中心Y"]))
                         if 使用扩大区域 and not (
                             局部区域[0] <= target_x <= 局部区域[2]
                             and 局部区域[1] <= target_y <= 局部区域[3]
@@ -182,14 +193,20 @@ class YOLO持续对准服务:
                             下次扩大搜索时间 = 0.0
                         if abs(dx) <= tolerance and abs(dy) <= tolerance:
                             目标速度X, 目标速度Y = 控制器.更新误差(0.0, 0.0)
+                            稳定帧 += 1
                         else:
                             目标速度X, 目标速度Y = 控制器.更新误差(dx, dy)
+                            稳定帧 = 0
                         self._状态(
                             "adjust",
                             目标速度X=round(目标速度X, 2),
                             目标速度Y=round(目标速度Y, 2),
                             误差X=round(dx, 2),
                             误差Y=round(dy, 2),
+                            当前速度X=round(float(getattr(控制器, "当前速度X", 0.0)), 2),
+                            当前速度Y=round(float(getattr(控制器, "当前速度Y", 0.0)), 2),
+                            稳定帧=稳定帧,
+                            需要稳定帧=3,
                             持续跟随=True,
                             搜索范围="扩大" if 使用扩大区域 else "局部",
                         )
@@ -200,7 +217,15 @@ class YOLO持续对准服务:
                         pass
                     self._日志("yolo_persistent_detection_failed", 错误=str(exc))
                     self._状态("follow_failed", 错误=str(exc), 持续跟随=True)
-                if 本次停止事件.wait(self.检测间隔秒数):
+                推荐看门狗 = getattr(self.yolo检测器, "推荐看门狗秒数", None)
+                更新看门狗 = getattr(控制器, "更新看门狗", None)
+                if 推荐看门狗 is not None and callable(更新看门狗):
+                    更新看门狗(float(推荐看门狗))
+                检测间隔 = max(
+                    self.检测间隔秒数,
+                    float(getattr(self.yolo检测器, "推荐检测间隔秒数", self.检测间隔秒数)),
+                )
+                if 本次停止事件.wait(检测间隔):
                     break
         finally:
             控制器.停止()

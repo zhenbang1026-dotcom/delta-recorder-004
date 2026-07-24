@@ -32,6 +32,19 @@ def test_copy_shortcut_runs_copy_and_stops_tk_default_handling() -> None:
     assert calls == ["copy"]
 
 
+def test_selected_action_can_be_run_as_a_single_debug_step() -> None:
+    action = 路线动作("wait", {"milliseconds": 100})
+    window = object.__new__(动作列表窗口)
+    window.actions = [action]
+    window.listbox = type("Listbox", (), {"curselection": lambda self: (0,)})()
+    calls = []
+    window.测试回调 = calls.append
+
+    window._测试()
+
+    assert calls == [action]
+
+
 def test_key_form_builds_ordered_combo() -> None:
     action = 从表单创建动作(
         "key",
@@ -169,9 +182,61 @@ def test_persistent_yolo_aim_on_and_off_forms_are_separate_actions() -> None:
         "confidence": 0.5,
         "tolerance_px": 12,
         "target_y_offset_px": 20,
+        "target_class": "",
     }
     assert off.参数 == {}
     assert [key for key, _label, _default, _options in 表单字段["yolo_aim_on"]] == [
-        "angle", "confidence", "tolerance_px", "target_y_offset_px"
+        "angle", "confidence", "tolerance_px", "target_y_offset_px", "target_class"
     ]
     assert 表单字段["yolo_aim_off"] == []
+
+
+def test_yolo_aim_once_form_supports_offset_stability_class_and_scan() -> None:
+    action = 从表单创建动作(
+        "yolo_aim_once",
+        {
+            "angle": "90",
+            "confidence": "0.5",
+            "timeout_ms": "5000",
+            "tolerance_px": "12",
+            "target_y_offset_px": "20",
+            "stable_frame_count": "3",
+            "target_class": "航空箱",
+            "scan_enabled": "是",
+            "scan_step_degrees": "8",
+            "scan_attempts": "4",
+        },
+    )
+
+    assert 动作标签["yolo_aim_once"] == "YOLO 识别目标完全对准后退出"
+    assert action.参数["target_y_offset_px"] == 20
+    assert action.参数["stable_frame_count"] == 3
+    assert action.参数["target_class"] == "航空箱"
+    assert action.参数["scan_enabled"] is True
+
+
+def test_image_action_forms_are_available() -> None:
+    appear = 从表单创建动作(
+        "image_wait_appear",
+        {"template_path": "images/箱子.png", "confidence": "0.85", "timeout_ms": "5000", "interval_ms": "100"},
+    )
+    disappear = 从表单创建动作(
+        "image_wait_disappear",
+        {"template_path": "images/箱子.png", "confidence": "0.85", "timeout_ms": "5000", "interval_ms": "100"},
+    )
+    click = 从表单创建动作(
+        "image_click",
+        {
+            "template_path": "images/箱子.png",
+            "confidence": "0.85",
+            "timeout_ms": "5000",
+            "interval_ms": "100",
+            "click_offset_x": "5",
+            "click_offset_y": "-3",
+        },
+    )
+
+    assert appear.类型 == "image_wait_appear"
+    assert disappear.类型 == "image_wait_disappear"
+    assert click.参数["click_offset_x"] == 5
+    assert click.参数["click_offset_y"] == -3

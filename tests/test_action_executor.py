@@ -314,6 +314,10 @@ def test_yolo_uses_smooth_controller_and_stops_it_before_keyboard_actions() -> N
         [
             [{"中心X": 150, "中心Y": 80, "置信度": 0.9, "类别名称": "医疗包"}],
             [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}],
+            [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}],
+            [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}],
+            [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}],
+            [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}],
         ]
     )
     now = [0.0]
@@ -397,6 +401,8 @@ def test_yolo_keeps_adjusting_while_w_is_held() -> None:
     targets = iter(
         [
             [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}],
+            [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}],
+            [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}],
             [{"中心X": 130, "中心Y": 90, "置信度": 0.9, "类别名称": "医疗包"}],
         ]
     )
@@ -438,7 +444,7 @@ def test_yolo_follow_detection_failure_does_not_abort_w_action() -> None:
 
     def 检测一次(*_args):
         检测次数[0] += 1
-        if 检测次数[0] == 1:
+        if 检测次数[0] <= 3:
             return [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}]
         raise RuntimeError("跟随检测失败")
 
@@ -478,6 +484,8 @@ def test_yolo_applies_vertical_target_offset_to_initial_and_follow_aim() -> None
     记录 = []
     targets = iter(
         [
+            [{"中心X": 100, "中心Y": 80, "置信度": 0.9, "类别名称": "医疗包"}],
+            [{"中心X": 100, "中心Y": 80, "置信度": 0.9, "类别名称": "医疗包"}],
             [{"中心X": 100, "中心Y": 80, "置信度": 0.9, "类别名称": "医疗包"}],
             [{"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "医疗包"}],
         ]
@@ -569,3 +577,110 @@ def test_old_yolo_interaction_pauses_and_resumes_persistent_aim() -> None:
     assert runner.执行动作(_YOLO动作())
     assert service.calls[0] == ("pause",)
     assert service.calls[-1] == ("resume", {"confidence": 0.6})
+
+
+def test_yolo_aim_once_requires_stable_frames_then_exits_without_f_or_w() -> None:
+    service = 假持续YOLO服务()
+    now = [0.0]
+    statuses = []
+    detector = SimpleNamespace(
+        执行器="CPU",
+        最近截图=None,
+        检测一次=lambda *_args: [
+            {"中心X": 100, "中心Y": 80, "置信度": 0.9, "类别名称": "航空箱"}
+        ],
+    )
+    runner = 路线动作执行器(
+        假输入(),
+        yolo检测器=detector,
+        获取检测区域=lambda: (0, 0, 200, 200, 100, 100),
+        持续YOLO服务=service,
+        状态函数=lambda event, **fields: statuses.append((event, fields)),
+        时钟=lambda: now[0],
+        睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+    action = 路线动作(
+        "yolo_aim_once",
+        {
+            "angle": 90.0,
+            "confidence": 0.5,
+            "timeout_ms": 1000,
+            "tolerance_px": 12,
+            "target_y_offset_px": 20,
+            "stable_frame_count": 3,
+            "target_class": "航空箱",
+            "scan_enabled": False,
+            "scan_step_degrees": 8.0,
+            "scan_attempts": 4,
+        },
+    )
+
+    assert runner.执行动作(action)
+    assert not any(call in {("down", "f"), ("down", "w")} for call in runner.输入模块.calls)
+    assert service.calls == [("pause",), ("resume", {"confidence": 0.6})]
+    assert [fields["稳定帧"] for event, fields in statuses if event == "adjust"][-3:] == [1, 2, 3]
+
+
+def test_image_wait_and_click_actions_use_match_center_and_offsets() -> None:
+    class 可点击输入(假输入):
+        def 鼠标点击(self, x, y, 按键="左键"):
+            self.calls.append(("click", x, y, 按键))
+
+    class 假匹配器:
+        def __init__(self):
+            self.results = iter([None, {"中心X": 100, "中心Y": 200, "置信度": 0.9}])
+
+        def 匹配一次(self, _path, _confidence):
+            return next(self.results)
+
+    now = [0.0]
+    inp = 可点击输入()
+    runner = 路线动作执行器(
+        inp,
+        图像匹配器=假匹配器(),
+        时钟=lambda: now[0],
+        睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+    action = 路线动作(
+        "image_click",
+        {
+            "template_path": "images/箱子.png",
+            "confidence": 0.85,
+            "timeout_ms": 1000,
+            "interval_ms": 100,
+            "click_offset_x": 5,
+            "click_offset_y": -3,
+        },
+    )
+
+    assert runner.执行动作(action)
+    assert inp.calls == [("click", 105, 197, "左键")]
+
+
+def test_wait_for_image_disappear_succeeds_only_after_match_is_gone() -> None:
+    class 假匹配器:
+        def __init__(self):
+            self.results = iter([{"中心X": 1, "中心Y": 1}, None])
+
+        def 匹配一次(self, _path, _confidence):
+            return next(self.results)
+
+    now = [0.0]
+    runner = 路线动作执行器(
+        假输入(),
+        图像匹配器=假匹配器(),
+        时钟=lambda: now[0],
+        睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+    action = 路线动作(
+        "image_wait_disappear",
+        {
+            "template_path": "images/箱子.png",
+            "confidence": 0.85,
+            "timeout_ms": 1000,
+            "interval_ms": 100,
+        },
+    )
+
+    assert runner.执行动作(action)
+    assert now[0] == pytest.approx(0.1)

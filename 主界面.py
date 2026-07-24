@@ -169,10 +169,13 @@ class 合并主界面:
         self._detect_thread: Optional[threading.Thread] = None
         self._cruise_thread: Optional[threading.Thread] = None
         self._look_test_thread: Optional[threading.Thread] = None
+        self._action_test_thread: Optional[threading.Thread] = None
         self._detect_start_after = None
         self._cruise_start_after = None
         self._look_test_start_after = None
         self._look_test_stop = threading.Event()
+        self._action_test_start_after = None
+        self._action_test_stop = threading.Event()
         self._queue: "queue.Queue[Tuple[str, object]]" = queue.Queue()
         self._log_path = None
         self._log_fn = None
@@ -816,7 +819,12 @@ class 合并主界面:
             messagebox.showerror("打开失败", "请先选择路线文件")
             return
         try:
-            路线编辑窗口(self.root, source, 保存回调=self._on_route_edited)
+            路线编辑窗口(
+                self.root,
+                source,
+                保存回调=self._on_route_edited,
+                测试回调=self._start_action_test,
+            )
         except (OSError, ValueError) as exc:
             messagebox.showerror("打开失败", str(exc))
 
@@ -882,6 +890,63 @@ class 合并主界面:
 
         self._look_test_start_after = self.root.after(1000, start_worker)
 
+    def _start_action_test(self, action: 路线动作) -> None:
+        if self.cruising or (self.recording and not self.recording_paused):
+            messagebox.showwarning("无法测试", "请先停止回放；录制时需先打开 Q 动作菜单")
+            return
+        if action.类型 in {"yolo_aim_on", "yolo_aim_off"}:
+            messagebox.showinfo("测试提示", "持续对准开/关属于成对动作，请保存后用路线回放测试")
+            return
+        if self._action_test_start_after is not None or (
+            self._action_test_thread is not None and self._action_test_thread.is_alive()
+        ):
+            return
+        locator = self.识别器 or self.巡航定位器
+        if action.类型 in {"view", "yolo_interact", "yolo_aim_once"} and locator is None:
+            if not self._try_init_cruise_locator(silent=False):
+                messagebox.showerror("测试失败", "当前没有可用的视角定位器")
+                return
+            locator = self.巡航定位器
+        try:
+            from YOLO物资检测 import 查找游戏窗口
+
+            game_hwnd = 查找游戏窗口()
+        except Exception:
+            game_hwnd = int(self._previous_foreground_hwnd or 0)
+
+        self._action_test_stop.clear()
+        self.status_var.set(f"窗口已最小化，1 秒后测试：{action.类型}")
+        self.root.iconify()
+
+        def worker() -> None:
+            executor = None
+            try:
+                executor = 巡航模块.Win32执行器(
+                    键鼠模块,
+                    self._action_test_stop,
+                    定位器=locator,
+                    YOLO状态函数=self._queue_yolo_status,
+                    游戏窗口句柄=game_hwnd,
+                )
+                results = executor.执行路线动作((action,))
+                if not results or not results[0]:
+                    raise RuntimeError("动作返回失败")
+                self._queue.put(("action_test_done", f"单步测试完成：{action.类型}"))
+            except Exception as exc:
+                self._queue.put(("action_test_error", f"单步测试失败：{exc}"))
+            finally:
+                if executor is not None:
+                    executor.停止()
+
+        def start_worker() -> None:
+            self._action_test_start_after = None
+            if self._action_test_stop.is_set():
+                return
+            self._action_test_thread = threading.Thread(target=worker, daemon=True)
+            self._action_test_thread.start()
+
+        self._action_test_start_after = self.root.after(1000, start_worker)
+
     # ------------------------------------------------------------------ queue / preview
     def _drain_queue(self) -> None:
         while True:
@@ -928,6 +993,10 @@ class 合并主界面:
                 self._set_look_test_buttons(True)
                 self.status_var.set(str(payload))
                 self._restore_window()
+            elif kind in {"action_test_done", "action_test_error"}:
+                self._action_test_thread = None
+                self.status_var.set(str(payload))
+                self._restore_window()
         self.root.after(80, self._drain_queue)
 
     def _queue_yolo_status(self, event: str, **fields) -> None:
@@ -936,7 +1005,7 @@ class 合并主界面:
                 self._cruise_game_hwnd = int(win32gui.GetForegroundWindow() or 0)
             except Exception:
                 self._cruise_game_hwnd = 0
-        if event == "inference":
+        if event in {"inference", "adjust"}:
             now = time.monotonic()
             if now - self._yolo_last_update < 0.08:
                 return
@@ -1039,6 +1108,7 @@ class 合并主界面:
     def _on_yolo_status(self, payload: dict) -> None:
         event = str(payload.get("event", ""))
         persistent = bool(payload.get("持续跟随"))
+        aim_only = bool(payload.get("仅对准"))
         if event == "start":
             if self._yolo_close_after is not None:
                 try:
@@ -1076,6 +1146,9 @@ class 合并主界面:
             status = "YOLO：持续识别中" if persistent else "YOLO：识别中"
             target = payload.get("目标") or {}
             progress = "模式：持续检测" if persistent else f"剩余时间：{payload.get('剩余毫秒', 0)}ms"
+            search_scope = payload.get("搜索范围")
+            if search_scope:
+                progress += f"  |  搜索范围：{search_scope}"
             info = (
                 f"执行器：{payload.get('执行器', '未知')}  |  "
                 f"检测模式：{payload.get('检测模式', '正常')}  |  "
@@ -1090,14 +1163,38 @@ class 合并主界面:
             )
         elif event == "adjust":
             status = "YOLO：持续对准调整中" if persistent else "YOLO：对准调整中"
+            if self._yolo_info_label is not None:
+                self._yolo_info_label.configure(
+                    text=(
+                        f"误差：X={payload.get('误差X', '--')}px  Y={payload.get('误差Y', '--')}px\n"
+                        f"目标速度：X={payload.get('目标速度X', '--')}  Y={payload.get('目标速度Y', '--')}  |  "
+                        f"当前速度：X={payload.get('当前速度X', '--')}  Y={payload.get('当前速度Y', '--')}\n"
+                        f"稳定帧：{payload.get('稳定帧', 0)}/{payload.get('需要稳定帧', 3)}"
+                    )
+                )
         elif event == "aligned":
-            status = f"YOLO：已对准，误差 X={payload.get('误差X', '--')} Y={payload.get('误差Y', '--')}，执行 F/W"
+            suffix = "已退出，不执行 F/W" if aim_only else "执行 F/W"
+            status = (
+                f"YOLO：已完全对准，误差 X={payload.get('误差X', '--')} "
+                f"Y={payload.get('误差Y', '--')}，{suffix}"
+            )
+        elif event == "scan":
+            status = (
+                f"YOLO：扫描视角 {payload.get('扫描视角', '--')}° "
+                f"({payload.get('扫描次数', 0)}/{payload.get('扫描总数', 0)})"
+            )
         elif event == "timeout":
             status = "YOLO：识别/对准超时，跳过动作"
         elif event == "unavailable":
             status = "YOLO：检测器不可用，跳过动作"
         elif event == "follow_failed":
             status = f"YOLO：持续检测失败，正在重试（{payload.get('错误', '--')}）"
+        elif event == "image_start":
+            status = f"识图：开始执行 {payload.get('类型', '')}"
+        elif event == "image_inference":
+            status = "识图：已匹配到模板" if payload.get("已找到") else "识图：正在等待"
+        elif event == "image_finish":
+            status = "识图：动作完成" if payload.get("成功") else "识图：超时，继续路线"
         elif event == "finish":
             if persistent:
                 status = "YOLO：持续对准已关闭"
@@ -1236,6 +1333,7 @@ class 合并主界面:
             获取当前角度=lambda: float(getattr(self.current_state, "angle", snapshot.angle)),
             完成回调=lambda actions: self._save_q_actions(snapshot, actions),
             取消回调=self._close_q_action_menu,
+            测试回调=self._start_action_test,
             title=f"Q 动作菜单 · 锚点 ({snapshot.x}, {snapshot.y})",
         )
 
@@ -1275,10 +1373,15 @@ class 合并主界面:
     def _on_close(self) -> None:
         try:
             self._look_test_stop.set()
+            self._action_test_stop.set()
             look_after = getattr(self, "_look_test_start_after", None)
             if look_after is not None:
                 self.root.after_cancel(look_after)
                 self._look_test_start_after = None
+            action_after = getattr(self, "_action_test_start_after", None)
+            if action_after is not None:
+                self.root.after_cancel(action_after)
+                self._action_test_start_after = None
             if self.recording:
                 self.stop_record()
             if self.detecting:

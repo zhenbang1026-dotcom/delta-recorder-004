@@ -116,6 +116,40 @@ def test_persistent_yolo_aim_actions_validate_and_roundtrip(tmp_path: Path) -> N
     assert 读取路线文件(path)[0].actions == (on, off)
 
 
+def test_yolo_aim_once_and_image_actions_roundtrip(tmp_path: Path) -> None:
+    once = 路线动作(
+        "yolo_aim_once",
+        {
+            "angle": 90.0,
+            "confidence": 0.5,
+            "timeout_ms": 5000,
+            "tolerance_px": 12,
+            "target_y_offset_px": 20,
+            "stable_frame_count": 3,
+            "target_class": "航空箱",
+            "scan_enabled": True,
+            "scan_step_degrees": 8.0,
+            "scan_attempts": 4,
+        },
+    ).校验()
+    image = 路线动作(
+        "image_click",
+        {
+            "template_path": "images/箱子.png",
+            "confidence": 0.85,
+            "timeout_ms": 5000,
+            "interval_ms": 100,
+            "click_offset_x": 5,
+            "click_offset_y": -3,
+        },
+    ).校验()
+    path = tmp_path / "new-actions.jsonl"
+
+    写入路线文件(path, [路线点(1, 2, 3.0, False, (once, image))])
+
+    assert 读取路线文件(path)[0].actions == (once, image)
+
+
 def test_editing_actions_keeps_explicit_order() -> None:
     point = 路线点(
         1,

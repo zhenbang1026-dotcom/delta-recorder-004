@@ -1854,7 +1854,7 @@ class Win32执行器:
             return []
         self._停止前进()
         self._更新视角(0)
-        if any(动作.类型 in {"yolo_interact", "yolo_aim_on"} for 动作 in 动作列表):
+        if any(动作.类型 in {"yolo_interact", "yolo_aim_on", "yolo_aim_once"} for 动作 in 动作列表):
             self._确保YOLO检测器()
         if any(动作.类型 == "yolo_aim_on" for 动作 in 动作列表):
             self._确保持续YOLO服务()
@@ -1863,6 +1863,7 @@ class Win32执行器:
             定位器=self.定位器,
             yolo检测器=self._YOLO检测器,
             获取检测区域=self._获取检测区域函数,
+            获取扩大检测区域=self._获取扩大检测区域函数,
             每度像素=当前每度像素(),
             停止事件=self.停止事件,
             日志函数=self.日志函数,
