@@ -42,10 +42,12 @@ import win32gui
 from PIL import Image, ImageTk
 
 import A记录坐标和角度版本 as 识别模块
+import Win32键鼠模块 as 键鼠模块
 import 自动录制坐标工具 as 录制模块
 import 巡航脚本 as 巡航模块
 from 动作编辑器 import 动作列表窗口, 路线编辑窗口
 from 路线动作 import 路线动作, 路线点, 写入路线文件
+from 路线动作执行 import 路线动作执行器
 
 # ---------------------------------------------------------------------------
 # 路径
@@ -99,6 +101,26 @@ def 构建动作锚点(state, actions) -> 路线点:
     return 路线点(state.x, state.y, state.angle, True, tuple(actions))
 
 
+def 构建低头抬头测试动作(
+    direction: str,
+    抬头Y,
+    平滑时长,
+    X随机范围,
+) -> 路线动作:
+    if direction not in {"down", "up"}:
+        raise ValueError("测试动作方向必须是 down 或 up")
+    action = 路线动作(
+        "look",
+        {
+            "direction": direction,
+            "y_delta": 8000 if direction == "down" else int(抬头Y),
+            "duration_ms": int(平滑时长),
+            "x_random": int(X随机范围),
+        },
+    )
+    return action.校验()
+
+
 def _生成录制路线路径(folder: Path) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     timestamp = 录制模块.生成时间戳()
@@ -146,8 +168,11 @@ class 合并主界面:
         self._cruise_stop = threading.Event()
         self._detect_thread: Optional[threading.Thread] = None
         self._cruise_thread: Optional[threading.Thread] = None
+        self._look_test_thread: Optional[threading.Thread] = None
         self._detect_start_after = None
         self._cruise_start_after = None
+        self._look_test_start_after = None
+        self._look_test_stop = threading.Event()
         self._queue: "queue.Queue[Tuple[str, object]]" = queue.Queue()
         self._log_path = None
         self._log_fn = None
@@ -164,6 +189,9 @@ class 合并主界面:
         self.speed_var = tk.DoubleVar(value=1.5)
         self.speed_label_var = tk.StringVar(value="1.5x")
         self.record_count_var = tk.StringVar(value="录制点数: 0")
+        self.look_up_y_var = tk.StringVar(value="-3000")
+        self.look_duration_var = tk.StringVar(value="300")
+        self.look_x_random_var = tk.StringVar(value="4")
 
         self._init_backends()
         self._build_ui()
@@ -334,6 +362,37 @@ class 合并主界面:
             r2, text="停止回放 (Esc)", command=self.stop_cruise, width=14, state="disabled"
         )
         self.btn_cruise_stop.pack(side="left")
+
+        # 独立低头 / 抬头测试
+        look_test = ttk.LabelFrame(self.root, text="低头 / 抬头独立测试", padding=8)
+        look_test.pack(fill="x", padx=12, pady=4)
+        ttk.Label(look_test, text="低头固定 Y: +8000").pack(side="left")
+        self.btn_look_down_test = ttk.Button(
+            look_test,
+            text="测试低头 (+8000)",
+            command=lambda: self._start_look_test("down"),
+            width=18,
+        )
+        self.btn_look_down_test.pack(side="left", padx=(8, 14))
+        ttk.Label(look_test, text="抬头 Y:").pack(side="left")
+        ttk.Entry(look_test, textvariable=self.look_up_y_var, width=8).pack(
+            side="left", padx=(4, 12)
+        )
+        ttk.Label(look_test, text="平滑时长(ms):").pack(side="left")
+        ttk.Entry(look_test, textvariable=self.look_duration_var, width=7).pack(
+            side="left", padx=(4, 12)
+        )
+        ttk.Label(look_test, text="X 随机 ±px:").pack(side="left")
+        ttk.Entry(look_test, textvariable=self.look_x_random_var, width=6).pack(
+            side="left", padx=(4, 12)
+        )
+        self.btn_look_up_test = ttk.Button(
+            look_test,
+            text="测试抬头",
+            command=lambda: self._start_look_test("up"),
+            width=12,
+        )
+        self.btn_look_up_test.pack(side="left")
 
         # 状态
         info = ttk.Frame(self.root, padding=(12, 4))
@@ -765,6 +824,63 @@ class 合并主界面:
         self._refresh_route_list(select=str(path))
         self.status_var.set(f"路线动作已保存: {path}")
 
+    # ------------------------------------------------------------------ look test
+    def _set_look_test_buttons(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        self.btn_look_down_test.config(state=state)
+        self.btn_look_up_test.config(state=state)
+
+    def _start_look_test(self, direction: str) -> None:
+        if self.recording or self.cruising:
+            messagebox.showwarning("无法测试", "请先停止录制和路线回放")
+            return
+        if self._look_test_start_after is not None or (
+            self._look_test_thread is not None and self._look_test_thread.is_alive()
+        ):
+            return
+        try:
+            action = 构建低头抬头测试动作(
+                direction,
+                self.look_up_y_var.get(),
+                self.look_duration_var.get(),
+                self.look_x_random_var.get(),
+            )
+        except (TypeError, ValueError, tk.TclError) as exc:
+            messagebox.showerror("参数错误", str(exc))
+            return
+
+        self._look_test_stop.clear()
+        self._set_look_test_buttons(False)
+        direction_label = "低头" if direction == "down" else "抬头"
+        self.status_var.set(f"窗口已最小化，1 秒后测试{direction_label}…")
+        self.root.iconify()
+
+        def worker() -> None:
+            try:
+                executor = 路线动作执行器(键鼠模块, 停止事件=self._look_test_stop)
+                if not executor.执行动作(action):
+                    raise RuntimeError(f"{direction_label}测试执行失败")
+                self._queue.put(
+                    (
+                        "look_test_done",
+                        f"{direction_label}测试完成：Y={action.参数['y_delta']}px，"
+                        f"时长={action.参数['duration_ms']}ms，X±{action.参数['x_random']}px",
+                    )
+                )
+            except InterruptedError:
+                self._queue.put(("look_test_error", f"{direction_label}测试已停止"))
+            except Exception as exc:
+                self._queue.put(("look_test_error", f"{direction_label}测试失败: {exc}"))
+
+        def start_worker() -> None:
+            self._look_test_start_after = None
+            if self._look_test_stop.is_set():
+                return
+            self._look_test_thread = threading.Thread(target=worker, daemon=True)
+            self._look_test_thread.start()
+
+        self._look_test_start_after = self.root.after(1000, start_worker)
+
     # ------------------------------------------------------------------ queue / preview
     def _drain_queue(self) -> None:
         while True:
@@ -805,6 +921,11 @@ class 合并主界面:
                 self.btn_cruise_stop.config(state="disabled")
                 self.btn_detect_start.config(state="normal")
                 self._set_angle_radios(True)
+                self._restore_window()
+            elif kind in {"look_test_done", "look_test_error"}:
+                self._look_test_thread = None
+                self._set_look_test_buttons(True)
+                self.status_var.set(str(payload))
                 self._restore_window()
         self.root.after(80, self._drain_queue)
 
@@ -1106,6 +1227,11 @@ class 合并主界面:
 
     def _on_close(self) -> None:
         try:
+            self._look_test_stop.set()
+            look_after = getattr(self, "_look_test_start_after", None)
+            if look_after is not None:
+                self.root.after_cancel(look_after)
+                self._look_test_start_after = None
             if self.recording:
                 self.stop_record()
             if self.detecting:
