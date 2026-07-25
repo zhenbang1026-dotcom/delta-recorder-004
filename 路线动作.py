@@ -123,6 +123,8 @@ class 路线动作:
             _整数(p.get("stable_frame_count", 3), "稳定帧数", 最小值=1)
             if not isinstance(p.get("target_class", ""), str):
                 raise ValueError("目标类别必须是文字")
+            if not isinstance(p.get("restore_view", True), bool):
+                raise ValueError("恢复记录视角开关必须为布尔值")
             if not isinstance(p.get("scan_enabled", True), bool):
                 raise ValueError("多视角扫描开关必须为布尔值")
             scan_step = float(p.get("scan_step_degrees", 8.0))

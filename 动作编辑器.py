@@ -134,6 +134,7 @@ def 从表单创建动作(action_type: str, values: dict[str, object]) -> 路线
             "yolo_aim_once",
             {
                 "angle": _浮点数(values.get("angle"), "视角角度"),
+                "restore_view": _布尔值(values.get("restore_view", "是"), "恢复记录视角"),
                 "confidence": _浮点数(values.get("confidence"), "置信度"),
                 "timeout_ms": _整数(values.get("timeout_ms"), "检测超时"),
                 "tolerance_px": _整数(values.get("tolerance_px"), "对准容差"),
@@ -192,8 +193,13 @@ def 动作摘要(action: 路线动作) -> str:
         return "YOLO 持续对准关"
     if action.类型 == "yolo_aim_once":
         target_class = p.get("target_class") or "任意类别"
+        view_summary = (
+            f"恢复视角 {float(p.get('angle', 0)):.2f}°"
+            if bool(p.get("restore_view", True))
+            else "使用执行时当前视角"
+        )
         return (
-            f"YOLO 完全对准后退出（{target_class}，视角 {float(p.get('angle', 0)):.2f}°，"
+            f"YOLO 完全对准后退出（{target_class}，{view_summary}，"
             f"Y偏移 {p.get('target_y_offset_px', 0)}px，稳定 {p.get('stable_frame_count', 3)} 帧）"
         )
     if action.类型 in {"image_wait_appear", "image_wait_disappear", "image_click"}:
@@ -249,6 +255,7 @@ def 动作摘要(action: 路线动作) -> str:
     "yolo_aim_off": [],
     "yolo_aim_once": [
         ("angle", "先恢复水平视角（度）", "0", None),
+        ("restore_view", "恢复记录视角", "是", ("是", "否")),
         ("confidence", "置信度阈值", "0.50", None),
         ("timeout_ms", "识别/对准超时（毫秒）", "5000", None),
         ("tolerance_px", "完全对准容差（像素）", "12", None),
@@ -331,7 +338,7 @@ class 动作参数窗口:
             return "长按" if value == "hold" else "单击"
         if key == "direction":
             return "低头" if value == "down" else "抬头"
-        if key == "scan_enabled":
+        if key in {"restore_view", "scan_enabled"}:
             return "是" if bool(value) else "否"
         if key == "keys" and isinstance(value, (list, tuple)):
             return "+".join(str(item) for item in value)

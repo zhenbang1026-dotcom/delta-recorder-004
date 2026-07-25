@@ -384,20 +384,30 @@ class 路线动作执行器:
     def _YOLO对准(self, action: 路线动作, *, 执行交互: bool) -> bool:
         p = action.参数
         timeout_ms = int(p.get("timeout_ms", 5000))
+        恢复记录视角 = 执行交互 or bool(p.get("restore_view", True))
+        扫描基准角度 = float(p.get("angle", 0))
         对准控制器 = None
         持续恢复参数 = self.持续YOLO服务.暂停() if self.持续YOLO服务 is not None else None
-        self._日志("yolo_interaction_start", 超时毫秒=timeout_ms, 仅对准=not 执行交互)
+        self._日志(
+            "yolo_interaction_start",
+            超时毫秒=timeout_ms,
+            仅对准=not 执行交互,
+            恢复记录视角=恢复记录视角,
+        )
         self._状态(
             "start",
             目标角度=p.get("angle"),
             超时毫秒=timeout_ms,
             置信度阈值=float(p.get("confidence", 0.5)),
             仅对准=not 执行交互,
+            恢复记录视角=恢复记录视角,
         )
         成功 = False
         扫描过 = False
         try:
-            if "angle" in p and self.定位器 is not None:
+            if not 恢复记录视角 and self.定位器 is not None:
+                扫描基准角度 = self._读取角度()
+            if 恢复记录视角 and "angle" in p and self.定位器 is not None:
                 self._状态("view", 目标角度=p["angle"], 仅对准=not 执行交互)
                 if not self.恢复视角(float(p["angle"])):
                     self._日志("yolo_view_failed", 目标角度=p["angle"])
@@ -419,7 +429,7 @@ class 路线动作执行器:
             )
             scan_views = (
                 生成扫描视角(
-                    float(p.get("angle", 0)),
+                    扫描基准角度,
                     float(p.get("scan_step_degrees", 8)),
                     int(p.get("scan_attempts", 4)),
                 )
@@ -589,8 +599,8 @@ class 路线动作执行器:
                 if not aligned:
                     self._等待(self._YOLO检测间隔(对准控制器))
 
-            if 扫描过 and "angle" in p and self.定位器 is not None:
-                self.恢复视角(float(p["angle"]))
+            if 扫描过 and self.定位器 is not None:
+                self.恢复视角(扫描基准角度)
             self._日志("yolo_timeout", 超时毫秒=timeout_ms)
             self._状态("timeout", 超时毫秒=timeout_ms, 仅对准=not 执行交互)
             return False

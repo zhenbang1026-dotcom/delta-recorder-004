@@ -202,6 +202,7 @@ def test_yolo_aim_once_form_supports_offset_stability_class_and_scan() -> None:
             "target_y_offset_px": "20",
             "stable_frame_count": "3",
             "target_class": "航空箱",
+            "restore_view": "否",
             "scan_enabled": "是",
             "scan_step_degrees": "8",
             "scan_attempts": "4",
@@ -212,7 +213,10 @@ def test_yolo_aim_once_form_supports_offset_stability_class_and_scan() -> None:
     assert action.参数["target_y_offset_px"] == 20
     assert action.参数["stable_frame_count"] == 3
     assert action.参数["target_class"] == "航空箱"
+    assert action.参数["restore_view"] is False
     assert action.参数["scan_enabled"] is True
+    defaults = {key: default for key, _label, default, _options in 表单字段["yolo_aim_once"]}
+    assert defaults["restore_view"] == "是"
 
 
 def test_image_action_forms_are_available() -> None:

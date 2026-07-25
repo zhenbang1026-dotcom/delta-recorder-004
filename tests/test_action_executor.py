@@ -670,6 +670,75 @@ def test_yolo_aim_once_requires_stable_frames_then_exits_without_f_or_w() -> Non
     assert [fields["稳定帧"] for event, fields in statuses if event == "adjust"][-3:] == [1, 2, 3]
 
 
+def test_yolo_aim_once_without_restore_uses_runtime_view_for_scan_and_reset() -> None:
+    now = [0.0]
+    restore_calls = []
+    aim_records = []
+    detector = SimpleNamespace(
+        执行器="CPU",
+        最近截图=None,
+        检测一次=lambda *_args: [],
+    )
+    runner = 路线动作执行器(
+        假输入(),
+        定位器=SimpleNamespace(读取状态=lambda: (0, 0, 120.0)),
+        yolo检测器=detector,
+        获取检测区域=lambda: (0, 0, 200, 200, 100, 100),
+        YOLO对准控制器工厂=lambda input_module, **kwargs: 假YOLO对准控制器(
+            input_module, aim_records, **kwargs
+        ),
+        时钟=lambda: now[0],
+        睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+    runner.恢复视角 = lambda angle: restore_calls.append(angle) or True
+    action = 路线动作(
+        "yolo_aim_once",
+        {
+            "angle": 90.0,
+            "restore_view": False,
+            "timeout_ms": 1200,
+            "scan_enabled": True,
+            "scan_step_degrees": 8.0,
+            "scan_attempts": 1,
+        },
+    )
+
+    assert not runner.执行动作(action)
+    assert restore_calls == pytest.approx([128.0, 120.0])
+
+
+def test_old_yolo_aim_once_defaults_to_restoring_recorded_view() -> None:
+    now = [0.0]
+    restore_calls = []
+    aim_records = []
+    detector = SimpleNamespace(
+        执行器="CPU",
+        最近截图=None,
+        检测一次=lambda *_args: [
+            {"中心X": 100, "中心Y": 100, "置信度": 0.9, "类别名称": "航空箱"}
+        ],
+    )
+    runner = 路线动作执行器(
+        假输入(),
+        定位器=SimpleNamespace(读取状态=lambda: (0, 0, 120.0)),
+        yolo检测器=detector,
+        获取检测区域=lambda: (0, 0, 200, 200, 100, 100),
+        YOLO对准控制器工厂=lambda input_module, **kwargs: 假YOLO对准控制器(
+            input_module, aim_records, **kwargs
+        ),
+        时钟=lambda: now[0],
+        睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+    runner.恢复视角 = lambda angle: restore_calls.append(angle) or True
+    action = 路线动作(
+        "yolo_aim_once",
+        {"angle": 90.0, "timeout_ms": 1000, "stable_frame_count": 1, "scan_enabled": False},
+    )
+
+    assert runner.执行动作(action)
+    assert restore_calls == [90.0]
+
+
 def test_image_wait_and_click_actions_use_match_center_and_offsets() -> None:
     class 可点击输入(假输入):
         def 鼠标点击(self, x, y, 按键="左键"):

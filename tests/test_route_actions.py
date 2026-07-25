@@ -127,6 +127,7 @@ def test_yolo_aim_once_and_image_actions_roundtrip(tmp_path: Path) -> None:
             "target_y_offset_px": 20,
             "stable_frame_count": 3,
             "target_class": "航空箱",
+            "restore_view": False,
             "scan_enabled": True,
             "scan_step_degrees": 8.0,
             "scan_attempts": 4,
@@ -148,6 +149,14 @@ def test_yolo_aim_once_and_image_actions_roundtrip(tmp_path: Path) -> None:
     写入路线文件(path, [路线点(1, 2, 3.0, False, (once, image))])
 
     assert 读取路线文件(path)[0].actions == (once, image)
+
+
+def test_yolo_aim_once_rejects_non_boolean_restore_view() -> None:
+    with pytest.raises(ValueError, match="恢复记录视角开关必须为布尔值"):
+        路线动作(
+            "yolo_aim_once",
+            {"angle": 90.0, "restore_view": "否"},
+        ).校验()
 
 
 def test_editing_actions_keeps_explicit_order() -> None:
