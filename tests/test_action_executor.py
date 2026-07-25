@@ -26,6 +26,18 @@ class 假输入:
         self.calls.append(("smooth", dx, dy))
 
 
+class 假视角控制器:
+    def __init__(self) -> None:
+        self.角度差记录 = []
+        self.当前角速度 = 0.0
+
+    def 更新角度差(self, delta):
+        self.角度差记录.append(float(delta))
+
+    def 停止(self):
+        raise AssertionError("共享视角控制器不应由单个路线动作停止")
+
+
 def test_combo_key_releases_in_reverse_order() -> None:
     inp = 假输入()
     now = [0.0]
@@ -120,34 +132,71 @@ def test_look_action_returns_x_to_origin_and_keeps_y_delta() -> None:
 
 def test_view_action_retries_until_angle_is_within_tolerance() -> None:
     inp = 假输入()
+    controller = 假视角控制器()
     angles = iter([350.0, 358.0, 0.5])
     locator = SimpleNamespace(读取状态=lambda: (0, 0, next(angles)))
     now = [0.0]
     runner = 路线动作执行器(
         inp,
         定位器=locator,
+        视角控制器=controller,
         时钟=lambda: now[0],
         睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
     )
 
     assert runner.执行动作(路线动作("view", {"angle": 0.0}))
-    assert any(call[0] in {"smooth", "move"} for call in inp.calls)
+    assert controller.角度差记录 == pytest.approx([10.0, 0.0])
+    assert not any(call[0] in {"smooth", "move"} for call in inp.calls)
 
 
 def test_view_action_can_recover_a_large_angle_within_five_attempts() -> None:
     inp = 假输入()
+    controller = 假视角控制器()
     angles = iter([204.0, 168.0, 132.0, 96.0, 93.0])
     locator = SimpleNamespace(读取状态=lambda: (0, 0, next(angles)))
     now = [0.0]
     runner = 路线动作执行器(
         inp,
         定位器=locator,
+        视角控制器=controller,
         时钟=lambda: now[0],
         睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
     )
 
     assert runner.执行动作(路线动作("view", {"angle": 93.0}))
-    assert max(abs(call[1]) for call in inp.calls if call[0] == "smooth") > 80
+    assert controller.角度差记录 == pytest.approx([-111.0, -75.0, -39.0, 0.0])
+    assert not any(call[0] in {"smooth", "move"} for call in inp.calls)
+
+
+def test_view_recovery_clears_continuous_target_when_locator_raises() -> None:
+    controller = 假视角控制器()
+    locator = SimpleNamespace(读取状态=lambda: (_ for _ in ()).throw(RuntimeError("识别失败")))
+    runner = 路线动作执行器(假输入(), 定位器=locator, 视角控制器=controller)
+
+    with pytest.raises(RuntimeError, match="识别失败"):
+        runner.恢复视角(90.0)
+
+    assert controller.角度差记录 == [0.0]
+
+
+def test_standalone_view_recovery_creates_and_reclaims_pathfinding_controller() -> None:
+    controller = 假视角控制器()
+    stopped = []
+    controller.停止 = lambda: stopped.append(True)
+    angles = iter([350.0, 0.0])
+    locator = SimpleNamespace(读取状态=lambda: (0, 0, next(angles)))
+    now = [0.0]
+    runner = 路线动作执行器(
+        假输入(),
+        定位器=locator,
+        视角控制器工厂=lambda *_args, **_kwargs: controller,
+        时钟=lambda: now[0],
+        睡眠函数=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+
+    assert runner.恢复视角(0.0)
+    assert controller.角度差记录 == [10.0, 0.0]
+    assert stopped == [True]
 
 
 def test_yolo_action_always_releases_w_on_stop() -> None:

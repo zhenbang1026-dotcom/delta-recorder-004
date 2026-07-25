@@ -11,6 +11,7 @@ import random
 import time
 from typing import Any, Callable, Iterable
 
+from 连续视角控制 import 连续视角控制器
 from 路线动作 import 路线动作
 from YOLO连续对准 import YOLO连续对准控制器
 from YOLO物资动作 import YOLO目标跟踪器, 生成扫描视角
@@ -26,6 +27,7 @@ class 路线动作执行器:
         获取检测区域: Callable[[], tuple[int, int, int, int, float, float]] | None = None,
         获取扩大检测区域: Callable[[], tuple[int, int, int, int, float, float]] | None = None,
         图像匹配器: Any = None,
+        视角控制器: Any = None,
         每度像素: float = 100 / 3,
         停止事件: Any = None,
         日志函数: Callable[..., Any] | None = None,
@@ -36,7 +38,7 @@ class 路线动作执行器:
         随机数: random.Random | None = None,
         YOLO对准控制器工厂: Callable[..., Any] = YOLO连续对准控制器,
         持续YOLO服务: Any = None,
-        最大视角恢复步长: int = 1200,
+        视角控制器工厂: Callable[..., Any] = 连续视角控制器,
     ) -> None:
         self.输入模块 = 输入模块
         self.定位器 = 定位器
@@ -44,6 +46,7 @@ class 路线动作执行器:
         self.获取检测区域 = 获取检测区域
         self.获取扩大检测区域 = 获取扩大检测区域
         self.图像匹配器 = 图像匹配器
+        self.视角控制器 = 视角控制器
         self.每度像素 = float(每度像素)
         self.停止事件 = 停止事件
         self.日志函数 = 日志函数
@@ -54,7 +57,7 @@ class 路线动作执行器:
         self.随机数 = 随机数 or random.Random()
         self.YOLO对准控制器工厂 = YOLO对准控制器工厂
         self.持续YOLO服务 = 持续YOLO服务
-        self.最大视角恢复步长 = int(最大视角恢复步长)
+        self.视角控制器工厂 = 视角控制器工厂
 
     def _YOLO检测间隔(self, 控制器: Any, 默认值: float = 0.02) -> float:
         更新看门狗 = getattr(控制器, "更新看门狗", None)
@@ -158,21 +161,46 @@ class 路线动作执行器:
     def _角度差(current: float, target: float) -> float:
         return (target - current + 540) % 360 - 180
 
-    def 恢复视角(self, target_angle: float, tolerance: float = 3.0, max_attempts: int = 5) -> bool:
+    def 恢复视角(
+        self,
+        target_angle: float,
+        tolerance: float = 3.0,
+        max_attempts: int = 200,
+    ) -> bool:
         if self.定位器 is None:
             return False
         target_angle = float(target_angle) % 360
-        for _ in range(max_attempts):
-            self._检查停止()
-            current = self._读取角度()
-            delta = self._角度差(current, target_angle)
-            if abs(delta) <= tolerance:
-                return True
-            pixels = int(round(delta * self.每度像素))
-            pixels = max(-self.最大视角恢复步长, min(self.最大视角恢复步长, pixels))
-            self._鼠标平滑移动(pixels, 0)
-            self._等待(0.05)
-        return False
+        controller = self.视角控制器
+        owns_controller = False
+        target_is_zero = False
+        try:
+            for _ in range(max_attempts):
+                self._检查停止()
+                current = self._读取角度()
+                delta = self._角度差(current, target_angle)
+                if controller is None and abs(delta) > tolerance:
+                    controller = self.视角控制器工厂(
+                        self.输入模块,
+                        每度像素=self.每度像素,
+                    )
+                    owns_controller = True
+                if abs(delta) <= tolerance:
+                    if controller is None:
+                        return True
+                    controller.更新角度差(0.0)
+                    target_is_zero = True
+                    if abs(float(getattr(controller, "当前角速度", 0.0))) <= 5.0:
+                        return True
+                else:
+                    controller.更新角度差(delta)
+                    target_is_zero = False
+                self._等待(0.02)
+            return False
+        finally:
+            if controller is not None and not target_is_zero:
+                controller.更新角度差(0.0)
+            if owns_controller and controller is not None:
+                controller.停止()
 
     def _低头抬头(self, action: 路线动作) -> bool:
         p = action.参数

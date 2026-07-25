@@ -152,6 +152,29 @@ def test_yolo_aim_once_loads_detector_and_passes_expanded_roi_to_action_executor
     assert received[0]["获取扩大检测区域"] is expanded
 
 
+def test_route_actions_reuse_pathfinding_continuous_view_controller_for_view_restore():
+    received = []
+    continuous = 假连续控制器()
+
+    class 假路线动作执行器:
+        def __init__(self, _input, **kwargs):
+            received.append(kwargs)
+
+        def 执行动作列表(self, actions):
+            return [True for _action in actions]
+
+    executor = cruise.Win32执行器(
+        输入模块=假输入模块(),
+        连续控制器工厂=lambda _input, **_kwargs: continuous,
+        路线动作执行器工厂=假路线动作执行器,
+    )
+
+    executor.执行路线动作((路线动作("view", {"angle": 90.0}),))
+    executor.停止()
+
+    assert received[0]["视角控制器"] is continuous
+
+
 @pytest.mark.parametrize(
     ("mode", "输入倍率", "期望倍率"),
     [("legacy", "2.0", 2.0), ("text", 0.1, 0.5)],
