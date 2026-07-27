@@ -462,7 +462,6 @@ class 动作参数窗口:
         self.window = tk.Toplevel(parent)
         self.window.title("编辑动作" if action else "添加动作")
         self.window.transient(parent)
-        定位窗口到右下角(self.window, 620, 700, 参照窗口=parent)
         self.window.protocol("WM_DELETE_WINDOW", self._关闭)
         self.window.grab_set()
 
@@ -486,6 +485,7 @@ class 动作参数窗口:
         buttons.grid(row=2, column=0, columnspan=2, sticky="e", pady=(18, 0))
         ttk.Button(buttons, text="保存", command=self._保存, width=10).pack(side="left", padx=4)
         ttk.Button(buttons, text="取消", command=self._关闭, width=10).pack(side="left")
+        定位窗口到右下角(self.window, 620, 700, 参照窗口=parent)
 
     def _现有值(self, action_type: str, key: str, default: str) -> str:
         if self.action is None or self.action.类型 != action_type:
@@ -585,7 +585,6 @@ class 动作列表窗口:
         self.window = tk.Toplevel(parent)
         self.window.title(title)
         self.window.transient(parent)
-        定位窗口到右下角(self.window, 980, 560, 参照窗口=parent)
         self.window.protocol("WM_DELETE_WINDOW", self._取消)
         self.window.grab_set()
 
@@ -641,6 +640,7 @@ class 动作列表窗口:
             side="right", padx=5
         )
         self._刷新()
+        定位窗口到右下角(self.window, 980, 560, 参照窗口=parent)
 
     def _选中索引(self) -> int | None:
         if hasattr(self.listbox, "selection"):
@@ -838,7 +838,6 @@ class 动作列表窗口:
         dialog = tk.Toplevel(self.window)
         dialog.title("管理动作代码块" if 允许删除 else "插入动作代码块")
         dialog.transient(self.window)
-        定位窗口到右下角(dialog, 480, 360, 参照窗口=self.window)
         dialog.grab_set()
         outer = ttk.Frame(dialog, padding=12)
         outer.pack(fill="both", expand=True)
@@ -906,6 +905,7 @@ class 动作列表窗口:
         dialog.protocol("WM_DELETE_WINDOW", close)
         refresh()
         names.selection_set(0)
+        定位窗口到右下角(dialog, 480, 360, 参照窗口=self.window)
 
     def _关闭(self) -> None:
         try:
@@ -947,7 +947,6 @@ class 路线编辑窗口:
         self.window = tk.Toplevel(parent)
         self.window.title("编辑已保存路线动作（坐标只读）")
         self.window.transient(parent)
-        定位窗口到右下角(self.window, 820, 540, 参照窗口=parent)
         self.window.protocol("WM_DELETE_WINDOW", self._关闭)
         self.window.grab_set()
 
@@ -963,6 +962,7 @@ class 路线编辑窗口:
         ttk.Button(buttons, text="保存路线", command=self._保存, width=12).pack(side="right")
         ttk.Button(buttons, text="取消", command=self._关闭, width=10).pack(side="right", padx=6)
         self._刷新(0)
+        定位窗口到右下角(self.window, 820, 540, 参照窗口=parent)
 
     def _刷新(self, select: int | None = None) -> None:
         self.listbox.delete(0, "end")

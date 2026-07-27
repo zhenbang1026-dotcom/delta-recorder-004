@@ -497,7 +497,7 @@ def test_yolo重新开始会取消之前安排的窗口关闭() -> None:
     assert app._yolo_close_after is None
 
 
-def test_yolo窗口脱离最小化主窗口并显示在右下角(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_yolo窗口脱离最小化主窗口并显示在右上角(monkeypatch: pytest.MonkeyPatch) -> None:
     win32_calls = []
     position_calls = []
 
@@ -533,7 +533,7 @@ def test_yolo窗口脱离最小化主窗口并显示在右下角(monkeypatch: py
     monkeypatch.setattr(main_ui.tk, "Label", lambda *_args, **_kwargs: FakeLabel())
     monkeypatch.setattr(
         main_ui,
-        "定位窗口到右下角",
+        "定位窗口到右上角",
         lambda window, width, height, **kwargs: position_calls.append(
             (window, width, height, kwargs)
         ),

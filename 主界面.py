@@ -47,7 +47,7 @@ import 巡航脚本 as 巡航模块
 from 动作编辑器 import 动作列表窗口, 路线编辑窗口
 from 路线动作 import 路线动作, 路线点, 写入路线文件
 from 路线动作执行 import 路线动作执行器
-from 窗口定位 import 定位窗口到右下角
+from 窗口定位 import 定位窗口到右上角, 定位窗口到右下角, 获取外层窗口句柄
 
 # ---------------------------------------------------------------------------
 # 路径
@@ -165,7 +165,6 @@ class 合并主界面:
         self.root = tk.Tk()
         self.root.title("三角洲录制器005 · 录制 / 回放 / 路线动作")
         self.root.minsize(920, 700)
-        定位窗口到右下角(self.root, 1100, 820)
 
         # 业务状态
         self.识别器: Optional[识别模块.实时坐标角度识别器] = None
@@ -234,6 +233,7 @@ class 合并主界面:
         self.root.after(80, self._drain_queue)
         self.root.after(100, self._esc_poll)
         self.root.after(50, self._q_poll)
+        定位窗口到右下角(self.root, 1100, 820)
 
     # ------------------------------------------------------------------ init
     def _map_path_for_cv2(self) -> str:
@@ -1251,10 +1251,10 @@ class 合并主界面:
         self._queue.put(("yolo_status", {"event": event, **fields}))
 
     def _显示YOLO窗口(self, window) -> None:
-        定位窗口到右下角(window, 560, 430, 参照窗口=self.root)
+        定位窗口到右上角(window, 560, 430, 参照窗口=self.root)
         try:
             window.update_idletasks()
-            hwnd = int(window.winfo_id())
+            hwnd = 获取外层窗口句柄(window)
         except Exception:
             return
         try:
