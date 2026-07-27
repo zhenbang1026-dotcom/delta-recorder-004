@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Callable, Iterable
 
-from 路线动作 import 路线动作, 路线点, 读取路线文件, 写入路线文件
+from 路线动作 import (
+    路线动作,
+    路线点,
+    获取动作层级,
+    设置动作层级,
+    读取路线文件,
+    写入路线文件,
+)
 
 
 动作标签 = {
@@ -25,6 +33,154 @@ from 路线动作 import 路线动作, 路线点, 读取路线文件, 写入路�
     "image_click": "识图点击",
 }
 标签动作 = {label: action_type for action_type, label in 动作标签.items()}
+动作代码块文件 = Path(__file__).resolve().with_name("动作代码块.json")
+
+
+def 动作块范围(actions: Iterable[路线动作], index: int) -> tuple[int, int]:
+    """返回选中动作所在块的左闭右开范围；子项本身是单项块。"""
+    items = list(actions)
+    if not 0 <= index < len(items):
+        raise IndexError("动作索引超出范围")
+    if 获取动作层级(items[index]) == 1:
+        return index, index + 1
+    end = index + 1
+    while end < len(items) and 获取动作层级(items[end]) == 1:
+        end += 1
+    return index, end
+
+
+def 调整动作层级(
+    actions: Iterable[路线动作], index: int, direction: int
+) -> tuple[list[路线动作], int]:
+    """将动作左移或右移一级，最多保留父子两层。"""
+    items = list(actions)
+    if direction not in {-1, 1}:
+        raise ValueError("层级调整方向只能是 -1 或 1")
+    if not 0 <= index < len(items):
+        raise IndexError("动作索引超出范围")
+    level = 获取动作层级(items[index])
+    if direction == 1:
+        if level == 1 or index == 0:
+            return items, index
+        items[index] = 设置动作层级(items[index], 1)
+    elif level == 1:
+        items[index] = 设置动作层级(items[index], 0)
+    return items, index
+
+
+def 移动动作组(
+    actions: Iterable[路线动作], index: int, offset: int
+) -> tuple[list[路线动作], int]:
+    """移动父项及其子项；子项只能在同一父项内部排序。"""
+    items = list(actions)
+    if offset not in {-1, 1}:
+        raise ValueError("移动方向只能是 -1 或 1")
+    if not 0 <= index < len(items):
+        raise IndexError("动作索引超出范围")
+
+    if 获取动作层级(items[index]) == 1:
+        target = index + offset
+        if not 0 <= target < len(items) or 获取动作层级(items[target]) != 1:
+            return items, index
+        items[index], items[target] = items[target], items[index]
+        return items, target
+
+    start, end = 动作块范围(items, index)
+    block = items[start:end]
+    if offset == -1:
+        if start == 0:
+            return items, index
+        previous_start = start - 1
+        while previous_start > 0 and 获取动作层级(items[previous_start]) == 1:
+            previous_start -= 1
+        return items[:previous_start] + block + items[previous_start:start] + items[end:], previous_start
+
+    if end >= len(items):
+        return items, index
+    _next_start, next_end = 动作块范围(items, end)
+    next_block = items[end:next_end]
+    moved = items[:start] + next_block + block + items[next_end:]
+    return moved, start + len(next_block)
+
+
+def 生成动作树编号(actions: Iterable[路线动作]) -> list[str]:
+    numbers: list[str] = []
+    parent_number = 0
+    child_number = 0
+    for action in actions:
+        if 获取动作层级(action) == 0:
+            parent_number += 1
+            child_number = 0
+            numbers.append(str(parent_number))
+        else:
+            child_number += 1
+            numbers.append(f"{parent_number}.{child_number}")
+    return numbers
+
+
+def 读取动作代码块(path: str | Path = 动作代码块文件) -> dict[str, tuple[路线动作, ...]]:
+    target = Path(path)
+    if not target.exists():
+        return {}
+    try:
+        data = json.loads(target.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("动作代码块文件不是有效 JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError("动作代码块文件格式错误")
+    raw_blocks = data.get("blocks", data)
+    if not isinstance(raw_blocks, dict):
+        raise ValueError("动作代码块列表格式错误")
+    result: dict[str, tuple[路线动作, ...]] = {}
+    for name, raw_actions in raw_blocks.items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(raw_actions, list):
+            raise ValueError("动作代码块条目格式错误")
+        actions = tuple(路线动作.from_dict(item) for item in raw_actions)
+        if not actions:
+            raise ValueError(f"动作代码块“{name}”不能为空")
+        if 获取动作层级(actions[0]) == 1:
+            actions = (设置动作层级(actions[0], 0), *actions[1:])
+        result[name] = actions
+    return result
+
+
+def _写入动作代码块(
+    blocks: dict[str, tuple[路线动作, ...]], path: str | Path
+) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "version": 1,
+        "blocks": {
+            name: [action.to_dict() for action in actions]
+            for name, actions in blocks.items()
+        },
+    }
+    target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def 保存动作代码块(
+    name: str, actions: Iterable[路线动作], path: str | Path = 动作代码块文件
+) -> None:
+    normalized_name = str(name).strip()
+    if not normalized_name:
+        raise ValueError("代码块名称不能为空")
+    block = tuple(deepcopy(list(actions)))
+    if not block:
+        raise ValueError("代码块至少需要一个动作")
+    for action in block:
+        action.校验()
+    if 获取动作层级(block[0]) == 1:
+        block = (设置动作层级(block[0], 0), *block[1:])
+    blocks = 读取动作代码块(path)
+    blocks[normalized_name] = block
+    _写入动作代码块(blocks, path)
+
+
+def 删除动作代码块(name: str, path: str | Path = 动作代码块文件) -> None:
+    blocks = 读取动作代码块(path)
+    blocks.pop(name, None)
+    _写入动作代码块(blocks, path)
 
 
 def _整数(value, name: str) -> int:
@@ -406,6 +562,8 @@ class 动作参数窗口:
 
 
 class 动作列表窗口:
+    动作剪贴板: list[路线动作] = []
+
     def __init__(
         self,
         parent,
@@ -414,7 +572,7 @@ class 动作列表窗口:
         获取当前角度: Callable[[], float],
         完成回调: Callable[[tuple[路线动作, ...]], None],
         取消回调: Callable[[], None] | None = None,
-        测试回调: Callable[[路线动作], None] | None = None,
+        测试回调: Callable[[路线动作 | tuple[路线动作, ...]], None] | None = None,
         title: str = "路线动作",
     ) -> None:
         self.parent = parent
@@ -425,44 +583,109 @@ class 动作列表窗口:
         self.测试回调 = 测试回调
         self.window = tk.Toplevel(parent)
         self.window.title(title)
-        self.window.geometry("760x460")
+        self.window.geometry("980x560")
         self.window.transient(parent)
         self.window.protocol("WM_DELETE_WINDOW", self._取消)
         self.window.grab_set()
 
         outer = ttk.Frame(self.window, padding=12)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="动作按列表从上到下执行，可连续添加多个。").pack(anchor="w")
-        self.listbox = tk.Listbox(outer, height=15)
-        self.listbox.pack(fill="both", expand=True, pady=8)
+        ttk.Label(
+            outer,
+            text="动作按树形列表从上到下执行；父项可折叠，移动、复制、删除和测试会包含其子项。",
+        ).pack(anchor="w")
+        tree_frame = ttk.Frame(outer)
+        tree_frame.pack(fill="both", expand=True, pady=8)
+        self.listbox = ttk.Treeview(tree_frame, show="tree", selectmode="browse", height=15)
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.listbox.yview)
+        self.listbox.configure(yscrollcommand=scrollbar.set)
+        self.listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        self._tree_index_by_item: dict[str, int] = {}
         self.window.bind("<Control-c>", self._复制快捷键)
+        self.window.bind("<Control-v>", self._粘贴快捷键)
+
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x")
         for text, command in (
-            ("添加", self._添加), ("编辑", self._编辑), ("复制", self._复制), ("删除", self._删除),
-            ("上移", lambda: self._移动(-1)), ("下移", lambda: self._移动(1)),
+            ("添加", self._添加),
+            ("编辑", self._编辑),
+            ("复制", self._复制),
+            ("粘贴", self._粘贴),
+            ("删除", self._删除),
+            ("上移", lambda: self._移动(-1)),
+            ("下移", lambda: self._移动(1)),
+            ("左移", lambda: self._调整层级(-1)),
+            ("右移", lambda: self._调整层级(1)),
         ):
             ttk.Button(buttons, text=text, command=command, width=9).pack(side="left", padx=(0, 5))
+
+        block_buttons = ttk.Frame(outer)
+        block_buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(block_buttons, text="保存代码块", command=self._保存代码块, width=12).pack(
+            side="left", padx=(0, 5)
+        )
+        ttk.Button(block_buttons, text="插入代码块", command=self._插入代码块, width=12).pack(
+            side="left", padx=(0, 5)
+        )
+        ttk.Button(block_buttons, text="管理代码块", command=self._管理代码块, width=12).pack(
+            side="left", padx=(0, 5)
+        )
         if self.测试回调 is not None:
-            ttk.Button(buttons, text="测试选中动作", command=self._测试, width=14).pack(
+            ttk.Button(block_buttons, text="测试选中动作/组", command=self._测试, width=16).pack(
                 side="left", padx=(4, 0)
             )
-        ttk.Button(buttons, text="完成", command=self._完成, width=10).pack(side="right")
-        ttk.Button(buttons, text="取消", command=self._取消, width=10).pack(side="right", padx=5)
+        ttk.Button(block_buttons, text="完成", command=self._完成, width=10).pack(side="right")
+        ttk.Button(block_buttons, text="取消", command=self._取消, width=10).pack(
+            side="right", padx=5
+        )
         self._刷新()
 
     def _选中索引(self) -> int | None:
+        if hasattr(self.listbox, "selection"):
+            selected = self.listbox.selection()
+            if not selected:
+                return None
+            item = str(selected[0])
+            index_by_item = getattr(self, "_tree_index_by_item", {})
+            if item in index_by_item:
+                return index_by_item[item]
+            if item.startswith("action-"):
+                return int(item.removeprefix("action-"))
+            return None
         selected = self.listbox.curselection()
         return int(selected[0]) if selected else None
 
     def _刷新(self, select: int | None = None) -> None:
-        self.listbox.delete(0, "end")
-        for index, action in enumerate(self.actions, start=1):
-            self.listbox.insert("end", f"{index}. {动作摘要(action)}")
+        children = self.listbox.get_children()
+        if children:
+            self.listbox.delete(*children)
+        self._tree_index_by_item.clear()
+        numbers = 生成动作树编号(self.actions)
+        parent_item = ""
+        item_by_index: dict[int, str] = {}
+        for index, (action, number) in enumerate(zip(self.actions, numbers)):
+            level = 获取动作层级(action)
+            if level == 0 or not parent_item:
+                item = self.listbox.insert(
+                    "", "end", iid=f"action-{index}", text=f"{number}. {动作摘要(action)}", open=True
+                )
+                parent_item = item
+            else:
+                item = self.listbox.insert(
+                    parent_item,
+                    "end",
+                    iid=f"action-{index}",
+                    text=f"{number}. {动作摘要(action)}",
+                )
+            self._tree_index_by_item[item] = index
+            item_by_index[index] = item
         if select is not None and self.actions:
             select = max(0, min(select, len(self.actions) - 1))
-            self.listbox.selection_set(select)
-            self.listbox.see(select)
+            item = item_by_index[select]
+            self.listbox.selection_set(item)
+            self.listbox.focus(item)
+            self.listbox.see(item)
 
     def _添加(self) -> None:
         动作参数窗口(
@@ -489,7 +712,7 @@ class 动作列表窗口:
         )
 
     def _替换(self, index: int, action: 路线动作) -> None:
-        self.actions[index] = action
+        self.actions[index] = 设置动作层级(action, 获取动作层级(self.actions[index]))
         self._刷新(index)
 
     def _复制(self) -> None:
@@ -497,11 +720,40 @@ class 动作列表窗口:
         if index is None:
             messagebox.showinfo("提示", "请先选择一个动作", parent=self.window)
             return
-        self.actions.insert(index + 1, deepcopy(self.actions[index]))
-        self._刷新(index + 1)
+        start, end = 动作块范围(self.actions, index)
+        type(self).动作剪贴板 = deepcopy(self.actions[start:end])
+
+    def _插入动作序列(self, actions: Iterable[路线动作]) -> None:
+        copied = deepcopy(list(actions))
+        if not copied:
+            return
+        index = self._选中索引()
+        if index is None:
+            insert_at = len(self.actions)
+        else:
+            _start, insert_at = 动作块范围(self.actions, index)
+            if 获取动作层级(copied[0]) == 0 and 获取动作层级(self.actions[index]) == 1:
+                parent_index = index - 1
+                while parent_index > 0 and 获取动作层级(self.actions[parent_index]) == 1:
+                    parent_index -= 1
+                _parent_start, insert_at = 动作块范围(self.actions, parent_index)
+        if (insert_at == 0 or not self.actions) and 获取动作层级(copied[0]) == 1:
+            copied[0] = 设置动作层级(copied[0], 0)
+        self.actions[insert_at:insert_at] = copied
+        self._刷新(insert_at)
+
+    def _粘贴(self) -> None:
+        if not type(self).动作剪贴板:
+            messagebox.showinfo("提示", "动作剪贴板为空，请先复制动作", parent=self.window)
+            return
+        self._插入动作序列(type(self).动作剪贴板)
 
     def _复制快捷键(self, _event=None) -> str:
         self._复制()
+        return "break"
+
+    def _粘贴快捷键(self, _event=None) -> str:
+        self._粘贴()
         return "break"
 
     def _测试(self) -> None:
@@ -510,21 +762,149 @@ class 动作列表窗口:
             messagebox.showinfo("提示", "请先选择一个动作", parent=self.window)
             return
         if self.测试回调 is not None:
-            self.测试回调(self.actions[index])
+            start, end = 动作块范围(self.actions, index)
+            block = tuple(self.actions[start:end])
+            self.测试回调(block if len(block) > 1 else block[0])
 
     def _删除(self) -> None:
         index = self._选中索引()
-        if index is not None:
-            del self.actions[index]
-            self._刷新(index)
+        if index is None:
+            return
+        start, end = 动作块范围(self.actions, index)
+        if end - start > 1 and not messagebox.askyesno(
+            "删除动作组",
+            f"该父项包含 {end - start - 1} 个子项，确定删除整个动作组吗？",
+            parent=self.window,
+        ):
+            return
+        del self.actions[start:end]
+        self._刷新(start)
 
     def _移动(self, offset: int) -> None:
         index = self._选中索引()
-        target = None if index is None else index + offset
-        if index is None or target is None or not 0 <= target < len(self.actions):
+        if index is None:
             return
-        self.actions[index], self.actions[target] = self.actions[target], self.actions[index]
-        self._刷新(target)
+        self.actions, selected = 移动动作组(self.actions, index, offset)
+        self._刷新(selected)
+
+    def _调整层级(self, direction: int) -> None:
+        index = self._选中索引()
+        if index is None:
+            return
+        self.actions, selected = 调整动作层级(self.actions, index, direction)
+        self._刷新(selected)
+
+    def _保存代码块(self) -> None:
+        index = self._选中索引()
+        if index is None:
+            messagebox.showinfo("提示", "请先选择要保存的动作或动作组", parent=self.window)
+            return
+        name = simpledialog.askstring("保存代码块", "请输入代码块名称：", parent=self.window)
+        if name is None or not name.strip():
+            return
+        try:
+            blocks = 读取动作代码块()
+            normalized_name = name.strip()
+            if normalized_name in blocks and not messagebox.askyesno(
+                "覆盖代码块",
+                f"代码块“{normalized_name}”已存在，确定覆盖吗？",
+                parent=self.window,
+            ):
+                return
+            start, end = 动作块范围(self.actions, index)
+            保存动作代码块(normalized_name, self.actions[start:end])
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("保存失败", str(exc), parent=self.window)
+            return
+        messagebox.showinfo("保存成功", f"已保存代码块“{normalized_name}”", parent=self.window)
+
+    def _插入代码块(self) -> None:
+        self._打开代码块窗口(允许删除=False)
+
+    def _管理代码块(self) -> None:
+        self._打开代码块窗口(允许删除=True)
+
+    def _打开代码块窗口(self, *, 允许删除: bool) -> None:
+        try:
+            blocks = 读取动作代码块()
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("读取失败", str(exc), parent=self.window)
+            return
+        if not blocks:
+            messagebox.showinfo("代码块", "还没有保存的动作代码块", parent=self.window)
+            return
+
+        dialog = tk.Toplevel(self.window)
+        dialog.title("管理动作代码块" if 允许删除 else "插入动作代码块")
+        dialog.geometry("480x360")
+        dialog.transient(self.window)
+        dialog.grab_set()
+        outer = ttk.Frame(dialog, padding=12)
+        outer.pack(fill="both", expand=True)
+        ttk.Label(outer, text="双击名称或选中后点击插入。代码块会插入到当前选中动作块之后。").pack(
+            anchor="w"
+        )
+        names = tk.Listbox(outer)
+        names.pack(fill="both", expand=True, pady=8)
+
+        def refresh() -> None:
+            names.delete(0, "end")
+            for block_name in blocks:
+                names.insert("end", block_name)
+
+        def selected_name() -> str | None:
+            selected = names.curselection()
+            return str(names.get(selected[0])) if selected else None
+
+        def close() -> None:
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+            try:
+                self.window.grab_set()
+            except tk.TclError:
+                pass
+
+        def insert(_event=None) -> None:
+            name = selected_name()
+            if name is None:
+                messagebox.showinfo("提示", "请先选择代码块", parent=dialog)
+                return
+            self._插入动作序列(blocks[name])
+            close()
+
+        def delete() -> None:
+            name = selected_name()
+            if name is None:
+                messagebox.showinfo("提示", "请先选择代码块", parent=dialog)
+                return
+            if not messagebox.askyesno("删除代码块", f"确定删除“{name}”吗？", parent=dialog):
+                return
+            try:
+                删除动作代码块(name)
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("删除失败", str(exc), parent=dialog)
+                return
+            blocks.pop(name, None)
+            if not blocks:
+                close()
+                return
+            refresh()
+
+        names.bind("<Double-Button-1>", insert)
+        controls = ttk.Frame(outer)
+        controls.pack(fill="x")
+        ttk.Button(controls, text="插入", command=insert, width=10).pack(side="left")
+        if 允许删除:
+            ttk.Button(controls, text="删除", command=delete, width=10).pack(
+                side="left", padx=(6, 0)
+            )
+        ttk.Button(controls, text="关闭", command=close, width=10).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", close)
+        refresh()
+        names.selection_set(0)
 
     def _关闭(self) -> None:
         try:

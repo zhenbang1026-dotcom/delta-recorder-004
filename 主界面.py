@@ -1119,11 +1119,14 @@ class 合并主界面:
 
         self._look_test_start_after = self.root.after(1000, start_worker)
 
-    def _start_action_test(self, action: 路线动作) -> None:
+    def _start_action_test(self, action: 路线动作 | tuple[路线动作, ...]) -> None:
+        actions = (action,) if isinstance(action, 路线动作) else tuple(action)
+        if not actions:
+            return
         if self.cruising or (self.recording and not self.recording_paused):
             messagebox.showwarning("无法测试", "请先停止回放；录制时需先打开 Q 动作菜单")
             return
-        if action.类型 in {"yolo_aim_on", "yolo_aim_off"}:
+        if len(actions) == 1 and actions[0].类型 in {"yolo_aim_on", "yolo_aim_off"}:
             messagebox.showinfo("测试提示", "持续对准开/关属于成对动作，请保存后用路线回放测试")
             return
         if self._action_test_start_after is not None or (
@@ -1131,7 +1134,9 @@ class 合并主界面:
         ):
             return
         locator = self.识别器 or self.巡航定位器
-        if action.类型 in {"view", "yolo_interact", "yolo_aim_once"} and locator is None:
+        if any(
+            item.类型 in {"view", "yolo_interact", "yolo_aim_once"} for item in actions
+        ) and locator is None:
             if not self._try_init_cruise_locator(silent=False):
                 messagebox.showerror("测试失败", "当前没有可用的视角定位器")
                 return
@@ -1144,7 +1149,8 @@ class 合并主界面:
             game_hwnd = int(self._previous_foreground_hwnd or 0)
 
         self._action_test_stop.clear()
-        self.status_var.set(f"窗口已最小化，1 秒后测试：{action.类型}")
+        action_summary = " → ".join(item.类型 for item in actions)
+        self.status_var.set(f"窗口已最小化，1 秒后测试：{action_summary}")
         self.root.iconify()
 
         def worker() -> None:
@@ -1157,12 +1163,12 @@ class 合并主界面:
                     YOLO状态函数=self._queue_yolo_status,
                     游戏窗口句柄=game_hwnd,
                 )
-                results = executor.执行路线动作((action,))
-                if not results or not results[0]:
+                results = executor.执行路线动作(actions)
+                if not results or not all(results):
                     raise RuntimeError("动作返回失败")
-                self._queue.put(("action_test_done", f"单步测试完成：{action.类型}"))
+                self._queue.put(("action_test_done", f"动作测试完成：{action_summary}"))
             except Exception as exc:
-                self._queue.put(("action_test_error", f"单步测试失败：{exc}"))
+                self._queue.put(("action_test_error", f"动作测试失败：{exc}"))
             finally:
                 if executor is not None:
                     executor.停止()

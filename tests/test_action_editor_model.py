@@ -6,21 +6,44 @@ from 动作编辑器 import 动作列表窗口, 动作标签, 表单字段, 从�
 from 路线动作 import 路线动作
 
 
-def test_copy_selected_action_inserts_independent_copy_after_source() -> None:
+def test_copy_and_paste_selected_action_uses_independent_shared_clipboard() -> None:
     source = 路线动作("key", {"keys": ["w", "f"], "mode": "hold", "duration_ms": 200})
     window = object.__new__(动作列表窗口)
     window.actions = [source, 路线动作("wait", {"milliseconds": 500})]
     window.listbox = type("Listbox", (), {"curselection": lambda self: (0,)})()
     selected = []
     window._刷新 = selected.append
+    动作列表窗口.动作剪贴板 = []
 
     window._复制()
+    assert window.actions == [source, 路线动作("wait", {"milliseconds": 500})]
+    assert 动作列表窗口.动作剪贴板 == [source]
+    window._粘贴()
 
     assert window.actions == [source, source, 路线动作("wait", {"milliseconds": 500})]
     assert window.actions[1] is not source
     assert window.actions[1].参数 is not source.参数
     assert window.actions[1].参数["keys"] is not source.参数["keys"]
     assert selected == [1]
+
+
+def test_copy_and_paste_selected_parent_includes_all_children() -> None:
+    from 路线动作 import 设置动作层级
+
+    parent = 路线动作("wait", {"milliseconds": 100})
+    child = 设置动作层级(路线动作("wait", {"milliseconds": 200}), 1)
+    window = object.__new__(动作列表窗口)
+    window.actions = [parent, child, 路线动作("wait", {"milliseconds": 300})]
+    window.listbox = type("Listbox", (), {"curselection": lambda self: (0,)})()
+    window._刷新 = lambda _index: None
+    动作列表窗口.动作剪贴板 = []
+
+    window._复制()
+    window._粘贴()
+
+    assert window.actions == [parent, child, parent, child, 路线动作("wait", {"milliseconds": 300})]
+    assert window.actions[2] is not parent
+    assert window.actions[3] is not child
 
 
 def test_copy_shortcut_runs_copy_and_stops_tk_default_handling() -> None:
@@ -30,6 +53,15 @@ def test_copy_shortcut_runs_copy_and_stops_tk_default_handling() -> None:
 
     assert window._复制快捷键() == "break"
     assert calls == ["copy"]
+
+
+def test_paste_shortcut_runs_paste_and_stops_tk_default_handling() -> None:
+    window = object.__new__(动作列表窗口)
+    calls = []
+    window._粘贴 = lambda: calls.append("paste")
+
+    assert window._粘贴快捷键() == "break"
+    assert calls == ["paste"]
 
 
 def test_selected_action_can_be_run_as_a_single_debug_step() -> None:
@@ -43,6 +75,22 @@ def test_selected_action_can_be_run_as_a_single_debug_step() -> None:
     window._测试()
 
     assert calls == [action]
+
+
+def test_selected_parent_tests_parent_and_all_children_as_one_group() -> None:
+    from 路线动作 import 设置动作层级
+
+    parent = 路线动作("wait", {"milliseconds": 100})
+    child = 设置动作层级(路线动作("wait", {"milliseconds": 200}), 1)
+    window = object.__new__(动作列表窗口)
+    window.actions = [parent, child, 路线动作("wait", {"milliseconds": 300})]
+    window.listbox = type("Listbox", (), {"curselection": lambda self: (0,)})()
+    calls = []
+    window.测试回调 = calls.append
+
+    window._测试()
+
+    assert calls == [(parent, child)]
 
 
 def test_key_form_builds_ordered_combo() -> None:

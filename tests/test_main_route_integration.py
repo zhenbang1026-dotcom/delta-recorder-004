@@ -49,3 +49,19 @@ def test_回放区域提供可见路线队列和完整管理按钮() -> None:
         "编辑选中",
     ):
         assert text in source
+
+
+def test_动作编辑器提供树形层级复制粘贴和代码块按钮() -> None:
+    source = inspect.getsource(main_ui.动作列表窗口.__init__)
+
+    for text in (
+        "Treeview",
+        "左移",
+        "右移",
+        "粘贴",
+        "保存代码块",
+        "插入代码块",
+        "管理代码块",
+        "<Control-v>",
+    ):
+        assert text in source

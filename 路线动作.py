@@ -44,6 +44,9 @@ class 路线动作:
         if self.类型 not in 支持动作类型:
             raise ValueError(f"不支持的路线动作类型: {self.类型}")
         p = self.参数
+        level = _整数(p.get("editor_level", 0), "动作层级", 最小值=0)
+        if level > 1:
+            raise ValueError("动作层级只能是 0 或 1")
         if self.类型 == "key":
             keys = p.get("keys")
             if isinstance(keys, str):
@@ -158,6 +161,31 @@ class 路线动作:
         参数 = {key: value for key, value in data.items() if key not in {"type", "类型"}}
         action = cls(类型, 参数)
         return action.校验()
+
+
+def 获取动作层级(action: 路线动作) -> int:
+    """读取仅供编辑器使用的层级；旧路线默认是顶层。"""
+    if not isinstance(action, 路线动作):
+        raise ValueError("只能读取路线动作的层级")
+    level = _整数(action.参数.get("editor_level", 0), "动作层级", 最小值=0)
+    if level > 1:
+        raise ValueError("动作层级只能是 0 或 1")
+    return level
+
+
+def 设置动作层级(action: 路线动作, level: int) -> 路线动作:
+    """返回带指定编辑器层级的新动作，不修改传入动作。"""
+    if not isinstance(action, 路线动作):
+        raise ValueError("只能设置路线动作的层级")
+    normalized = _整数(level, "动作层级", 最小值=0)
+    if normalized > 1:
+        raise ValueError("动作层级只能是 0 或 1")
+    params = dict(action.参数)
+    if normalized:
+        params["editor_level"] = normalized
+    else:
+        params.pop("editor_level", None)
+    return 路线动作(action.类型, params).校验()
 
 
 @dataclass(frozen=True)

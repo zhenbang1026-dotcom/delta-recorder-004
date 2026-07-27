@@ -9,5 +9,6 @@ logs/
 录制结果/
 location.txt
 用户设置.json
+动作代码块.json
 *.log
 .DS_Store
