@@ -497,28 +497,28 @@ def test_yolo重新开始会取消之前安排的窗口关闭() -> None:
     assert app._yolo_close_after is None
 
 
-def test_yolo窗口脱离最小化主窗口并显示在右上角(monkeypatch: pytest.MonkeyPatch) -> None:
-    window_calls = []
+def test_yolo窗口脱离最小化主窗口并显示在右下角(monkeypatch: pytest.MonkeyPatch) -> None:
     win32_calls = []
+    position_calls = []
 
     class FakeWindow:
-        def title(self, value):
-            window_calls.append(("title", value))
+        def title(self, _value):
+            return None
 
-        def geometry(self, value):
-            window_calls.append(("geometry", value))
+        def geometry(self, _value):
+            return None
 
-        def resizable(self, width, height):
-            window_calls.append(("resizable", width, height))
+        def resizable(self, _width, _height):
+            return None
 
-        def protocol(self, name, callback):
-            window_calls.append(("protocol", name, callback))
+        def protocol(self, _name, _callback):
+            return None
 
         def winfo_screenwidth(self):
             return 1920
 
         def update_idletasks(self):
-            window_calls.append(("update_idletasks",))
+            return None
 
         def winfo_id(self):
             return 321
@@ -531,6 +531,13 @@ def test_yolo窗口脱离最小化主窗口并显示在右上角(monkeypatch: py
     monkeypatch.setattr(main_ui.tk, "Toplevel", lambda _root: fake_window)
     monkeypatch.setattr(main_ui.ttk, "Label", lambda *_args, **_kwargs: FakeLabel())
     monkeypatch.setattr(main_ui.tk, "Label", lambda *_args, **_kwargs: FakeLabel())
+    monkeypatch.setattr(
+        main_ui,
+        "定位窗口到右下角",
+        lambda window, width, height, **kwargs: position_calls.append(
+            (window, width, height, kwargs)
+        ),
+    )
     monkeypatch.setattr(main_ui.win32gui, "GetForegroundWindow", lambda: 999)
     monkeypatch.setattr(main_ui.win32gui, "GetWindowLong", lambda _hwnd, _index: 0)
     monkeypatch.setattr(
@@ -556,13 +563,12 @@ def test_yolo窗口脱离最小化主窗口并显示在右上角(monkeypatch: py
 
     app._创建YOLO窗口()
 
-    assert ("geometry", "560x430+1340+20") in window_calls
+    assert position_calls == [(fake_window, 560, 430, {"参照窗口": app.root})]
     owner_index = getattr(main_ui.win32con, "GWL_HWNDPARENT", -8)
     assert ("SetWindowLong", 321, owner_index, 0) in win32_calls
     set_position = next(call for call in win32_calls if call[0] == "SetWindowPos")
     assert set_position[2] == main_ui.win32con.HWND_TOPMOST
-    assert set_position[3:5] == (1340, 20)
-    assert not set_position[-1] & main_ui.win32con.SWP_NOMOVE
+    assert set_position[-1] & main_ui.win32con.SWP_NOMOVE
     assert set_position[-1] & main_ui.win32con.SWP_NOACTIVATE
     assert set_position[-1] & main_ui.win32con.SWP_SHOWWINDOW
 

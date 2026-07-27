@@ -47,6 +47,7 @@ import 巡航脚本 as 巡航模块
 from 动作编辑器 import 动作列表窗口, 路线编辑窗口
 from 路线动作 import 路线动作, 路线点, 写入路线文件
 from 路线动作执行 import 路线动作执行器
+from 窗口定位 import 定位窗口到右下角
 
 # ---------------------------------------------------------------------------
 # 路径
@@ -163,8 +164,8 @@ class 合并主界面:
         _ensure_dirs()
         self.root = tk.Tk()
         self.root.title("三角洲录制器005 · 录制 / 回放 / 路线动作")
-        self.root.geometry("1100x820")
         self.root.minsize(920, 700)
+        定位窗口到右下角(self.root, 1100, 820)
 
         # 业务状态
         self.识别器: Optional[识别模块.实时坐标角度识别器] = None
@@ -1250,6 +1251,7 @@ class 合并主界面:
         self._queue.put(("yolo_status", {"event": event, **fields}))
 
     def _显示YOLO窗口(self, window) -> None:
+        定位窗口到右下角(window, 560, 430, 参照窗口=self.root)
         try:
             window.update_idletasks()
             hwnd = int(window.winfo_id())
@@ -1266,13 +1268,13 @@ class 合并主界面:
             tool_window = getattr(win32con, "WS_EX_TOOLWINDOW", 0x00000080)
             win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, exstyle | no_activate | tool_window)
             flags = (
-                win32con.SWP_NOSIZE
+                win32con.SWP_NOMOVE
+                | win32con.SWP_NOSIZE
                 | win32con.SWP_NOACTIVATE
                 | win32con.SWP_SHOWWINDOW
             )
-            position_x = max(0, int(window.winfo_screenwidth()) - 580)
             win32gui.SetWindowPos(
-                hwnd, win32con.HWND_TOPMOST, position_x, 20, 0, 0, flags
+                hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, flags
             )
         except Exception:
             pass
@@ -1299,8 +1301,6 @@ class 合并主界面:
             self._yolo_previous_foreground_hwnd = 0
         window = tk.Toplevel(self.root)
         window.title("YOLO 物资识别状态（不抢游戏焦点）")
-        screen_width = int(window.winfo_screenwidth())
-        window.geometry(f"560x430+{max(0, screen_width - 580)}+20")
         window.resizable(False, False)
         window.protocol("WM_DELETE_WINDOW", self._关闭YOLO窗口)
         self._yolo_window = window

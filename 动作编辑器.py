@@ -16,6 +16,7 @@ from 路线动作 import (
     读取路线文件,
     写入路线文件,
 )
+from 窗口定位 import 定位窗口到右下角
 
 
 动作标签 = {
@@ -460,8 +461,8 @@ class 动作参数窗口:
         self.完成回调 = 完成回调
         self.window = tk.Toplevel(parent)
         self.window.title("编辑动作" if action else "添加动作")
-        self.window.geometry("620x700")
         self.window.transient(parent)
+        定位窗口到右下角(self.window, 620, 700, 参照窗口=parent)
         self.window.protocol("WM_DELETE_WINDOW", self._关闭)
         self.window.grab_set()
 
@@ -583,8 +584,8 @@ class 动作列表窗口:
         self.测试回调 = 测试回调
         self.window = tk.Toplevel(parent)
         self.window.title(title)
-        self.window.geometry("980x560")
         self.window.transient(parent)
+        定位窗口到右下角(self.window, 980, 560, 参照窗口=parent)
         self.window.protocol("WM_DELETE_WINDOW", self._取消)
         self.window.grab_set()
 
@@ -836,8 +837,8 @@ class 动作列表窗口:
 
         dialog = tk.Toplevel(self.window)
         dialog.title("管理动作代码块" if 允许删除 else "插入动作代码块")
-        dialog.geometry("480x360")
         dialog.transient(self.window)
+        定位窗口到右下角(dialog, 480, 360, 参照窗口=self.window)
         dialog.grab_set()
         outer = ttk.Frame(dialog, padding=12)
         outer.pack(fill="both", expand=True)
@@ -945,8 +946,8 @@ class 路线编辑窗口:
         self.测试回调 = 测试回调
         self.window = tk.Toplevel(parent)
         self.window.title("编辑已保存路线动作（坐标只读）")
-        self.window.geometry("820x540")
         self.window.transient(parent)
+        定位窗口到右下角(self.window, 820, 540, 参照窗口=parent)
         self.window.protocol("WM_DELETE_WINDOW", self._关闭)
         self.window.grab_set()
 
