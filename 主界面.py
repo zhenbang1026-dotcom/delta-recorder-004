@@ -20,7 +20,6 @@ import json
 import math
 import os
 import queue
-import shutil
 import sys
 import threading
 import time
@@ -628,9 +627,8 @@ class 合并主界面:
         self.btn_detect_stop.config(state="normal")
         self.btn_rec_start.config(state="normal")
         self._set_angle_radios(False)
-        self.status_var.set(f"窗口已最小化，3 秒后开始识别… | {识别模块.当前角度模式标签()}")
+        self.status_var.set(f"3 秒后开始识别… | {识别模块.当前角度模式标签()}")
         self._detect_thread = None
-        self.root.iconify()
         self._detect_start_after = self.root.after(START_DELAY_MS, self._start_detect_thread)
 
     def _start_detect_thread(self) -> None:
@@ -711,12 +709,8 @@ class 合并主界面:
             录制模块.写日志(self._log_fn, "event=record_stop", 结果="无记录")
             return
         try:
-            path = _生成录制路线路径(RECORD_DIR)
-            写入路线文件(path, self._recorded_route_points)
-            ROUTES_DIR.mkdir(parents=True, exist_ok=True)
-            dest = ROUTES_DIR / path.name
-            if dest.resolve() != path.resolve():
-                shutil.copy2(path, dest)
+            dest = _生成录制路线路径(ROUTES_DIR)
+            写入路线文件(dest, self._recorded_route_points)
         except (OSError, ValueError) as exc:
             self._last_saved = None
             messagebox.showerror("保存失败", str(exc))
@@ -754,8 +748,7 @@ class 合并主界面:
         if self.cruising:
             return
         if self.detecting:
-            messagebox.showinfo("提示", "请先停止识别，再开始回放，避免争抢截图。")
-            return
+            self.stop_detect()
         routes = tuple(self.route_queue)
         if not routes:
             selected_route = self.route_var.get().strip()
@@ -1196,17 +1189,17 @@ class 合并主界面:
             elif kind == "detect_stopped":
                 self.detecting = False
                 self._detect_thread = None
-                self.btn_detect_start.config(state="normal")
+                self.btn_detect_start.config(state="disabled" if self.cruising else "normal")
                 self.btn_detect_stop.config(state="disabled")
                 self.btn_rec_start.config(state="disabled")
                 self.btn_rec_stop.config(state="disabled")
                 if not self.cruising:
                     self._set_angle_radios(True)
-                if self._last_saved is None:
-                    self.status_var.set("已停止识别")
-                else:
-                    self.status_var.set(f"已停止识别 | 上次保存: {self._last_saved}")
-                self._restore_window()
+                    if self._last_saved is None:
+                        self.status_var.set("已停止识别")
+                    else:
+                        self.status_var.set(f"已停止识别 | 上次保存: {self._last_saved}")
+                    self._restore_window()
             elif kind == "cruise_done":
                 self.status_var.set(str(payload))
             elif kind == "cruise_progress":

@@ -224,7 +224,7 @@ def test回放区倍率控件范围步长默认值并显示当前值() -> None:
     assert app.speed_label_var.get() == "2.4x"
 
 
-def test开始识别先最小化且三秒后才启动读取线程(monkeypatch: pytest.MonkeyPatch) -> None:
+def test开始识别保持窗口且三秒后才启动读取线程(monkeypatch: pytest.MonkeyPatch) -> None:
     _Thread.instances.clear()
     monkeypatch.setattr(main_ui.threading, "Thread", _Thread)
     monkeypatch.setattr(main_ui.录制模块, "创建日志记录器", lambda _name: (None, None))
@@ -242,7 +242,7 @@ def test开始识别先最小化且三秒后才启动读取线程(monkeypatch: p
     app.start_detect()
 
     delayed = [call for call in app.root.calls if call[:2] == ("after", 3000)]
-    assert app.root.calls[0] == ("iconify",)
+    assert not any(call[0] == "iconify" for call in app.root.calls)
     assert len(delayed) == 1
     assert _Thread.instances == []
 
@@ -251,7 +251,7 @@ def test开始识别先最小化且三秒后才启动读取线程(monkeypatch: p
     assert _Thread.instances[0].started is True
 
 
-def test开始回放先最小化且延迟透传倍率(monkeypatch: pytest.MonkeyPatch) -> None:
+def test开始回放自动停止识别并延迟透传倍率(monkeypatch: pytest.MonkeyPatch) -> None:
     _Thread.instances.clear()
     monkeypatch.setattr(main_ui.threading, "Thread", _Thread)
     monkeypatch.setattr(main_ui.巡航模块, "校验路线文件", lambda route: route)
@@ -259,6 +259,12 @@ def test开始回放先最小化且延迟透传倍率(monkeypatch: pytest.Monkey
     monkeypatch.setattr(main_ui.巡航模块, "构建开始状态文本", lambda delay: f"delay={delay}")
     monkeypatch.setattr(main_ui.巡航模块, "创建日志记录器", lambda _name: (None, None))
     monkeypatch.setattr(main_ui.识别模块, "当前角度模式标签", lambda: "Legacy")
+    notices = []
+    monkeypatch.setattr(
+        main_ui.messagebox,
+        "showinfo",
+        lambda title, message: notices.append((title, message)),
+    )
     cruise_calls: list[tuple[Any, dict[str, Any]]] = []
     monkeypatch.setattr(
         main_ui.巡航模块,
@@ -284,8 +290,10 @@ def test开始回放先最小化且延迟透传倍率(monkeypatch: pytest.Monkey
         lambda route, **kwargs: cruise_calls.append((route, kwargs)),
     )
     app = _button_app()
-    app.detecting = False
+    app.detecting = True
     app.cruising = False
+    detect_stops = []
+    app.stop_detect = lambda: (detect_stops.append(True), setattr(app, "detecting", False))
     app.route_var.set("route.txt")
     app.route_queue = ["part1.jsonl", "part2.jsonl"]
     app.speed_var.set(2.4)
@@ -300,6 +308,8 @@ def test开始回放先最小化且延迟透传倍率(monkeypatch: pytest.Monkey
     app.start_cruise()
 
     delayed = [call for call in app.root.calls if call[:2] == ("after", 3000)]
+    assert detect_stops == [True]
+    assert notices == []
     assert app.root.calls[0] == ("iconify",)
     assert len(delayed) == 1
     assert _Thread.instances == []
@@ -312,6 +322,34 @@ def test开始回放先最小化且延迟透传倍率(monkeypatch: pytest.Monkey
     assert cruise_calls[0][1]["视角速度倍率"] == 2.4
     assert cruise_calls[0][1]["中间段终点对正"] is True
     assert callable(cruise_calls[0][1]["路线段回调"])
+
+
+def test停止录制只保存到路线目录(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    routes = tmp_path / "routes"
+    records = tmp_path / "录制结果"
+    monkeypatch.setattr(main_ui, "ROUTES_DIR", routes)
+    monkeypatch.setattr(main_ui, "RECORD_DIR", records)
+    monkeypatch.setattr(main_ui.录制模块, "生成时间戳", lambda: "20260727_120000")
+    monkeypatch.setattr(main_ui.录制模块, "写日志", lambda *_args, **_kwargs: None)
+    app = _button_app()
+    app.detecting = True
+    app.recording = True
+    app.recording_paused = False
+    app._recorded_route_points = [main_ui.路线点(10, 20, 30.0)]
+    app._log_fn = None
+    app._last_saved = None
+    app.record_count_var = _Var("")
+    refreshed = []
+    app._refresh_route_list = lambda **kwargs: refreshed.append(kwargs)
+
+    app.stop_record()
+
+    expected = routes / "自动录制路线_20260727_120000.jsonl"
+    assert expected.exists()
+    assert not records.exists()
+    assert app._last_saved == expected
+    assert app.route_var.get() == str(expected)
+    assert refreshed == [{"select": str(expected)}]
 
 
 def test路线进度消息更新当前段状态() -> None:
@@ -424,6 +462,24 @@ def test任务结束消息会恢复主窗口(kind: str) -> None:
     app._drain_queue()
 
     assert ("deiconify",) in app.root.calls
+
+
+def test识别停止消息不会打断已经开始的回放() -> None:
+    app = _button_app()
+    app._queue = queue.Queue()
+    app._queue.put(("detect_stopped", None))
+    app.detecting = False
+    app.cruising = True
+    app._detect_thread = object()
+    app._last_saved = None
+    app.status_var.set("回放启动中")
+
+    app._drain_queue()
+
+    assert app._detect_thread is None
+    assert app.btn_detect_start.options["state"] == "disabled"
+    assert app.status_var.get() == "回放启动中"
+    assert not any(call[0] == "deiconify" for call in app.root.calls)
 
 
 def test_yolo重新开始会取消之前安排的窗口关闭() -> None:
