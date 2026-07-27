@@ -167,6 +167,13 @@ class 路径点:
 
 
 @dataclass(frozen=True)
+class 路线段信息:
+    路径: str
+    起点索引: int
+    终点索引: int
+
+
+@dataclass(frozen=True)
 class 模式参数:
     大角度阈值: float
     小角度阈值: float
@@ -548,6 +555,49 @@ def 读取路径(路径文件: str, 自动路线点距: int | None = None) -> li
         结果.append(路径点(x=x, y=y, angle=angle, 自动路线=当前自动路线))
     点距 = 自动路线最小点距 if 自动路线点距 is None else int(自动路线点距)
     return 抽稀自动路线(结果, 点距) if 自动路线 else 结果
+
+
+def 读取连续路径(
+    路径文件列表,
+    自动路线点距: int | None = None,
+) -> tuple[list[路径点], list[路线段信息]]:
+    路径列表 = [str(path) for path in 路径文件列表]
+    if not 路径列表:
+        raise ValueError("路线队列为空")
+    所有点: list[路径点] = []
+    路线段列表: list[路线段信息] = []
+    总数 = len(路径列表)
+    for 序号, path in enumerate(路径列表, start=1):
+        try:
+            当前段 = 读取路径(path, 自动路线点距=自动路线点距)
+        except Exception as exc:
+            raise ValueError(
+                f"第 {序号}/{总数} 段路线无效：{Path(path).name}（{path}）：{exc}"
+            ) from exc
+        if not 当前段:
+            raise ValueError(f"第 {序号}/{总数} 段路线为空：{Path(path).name}（{path}）")
+        起点索引 = len(所有点)
+        所有点.extend(当前段)
+        路线段列表.append(路线段信息(path, 起点索引, len(所有点) - 1))
+    return 所有点, 路线段列表
+
+
+def 计算路线衔接距离(
+    路径点列表: list[路径点],
+    路线段列表: list[路线段信息],
+) -> list[tuple[路线段信息, 路线段信息, int]]:
+    结果 = []
+    for 前一段, 后一段 in zip(路线段列表, 路线段列表[1:]):
+        前终点 = 路径点列表[前一段.终点索引]
+        后起点 = 路径点列表[后一段.起点索引]
+        结果.append(
+            (
+                前一段,
+                后一段,
+                计算距离(前终点.x, 前终点.y, 后起点.x, 后起点.y),
+            )
+        )
+    return 结果
 
 
 def 抽稀自动路线(路径点列表: list[路径点], 最小点距: int = 自动路线最小点距) -> list[路径点]:
@@ -1149,6 +1199,9 @@ class 巡航控制器:
         日志函数=None,
         停止事件: threading.Event | None = None,
         记录器: 寻路记录器 | None = None,
+        路线段列表: list[路线段信息] | None = None,
+        路线段回调=None,
+        中间段终点对正: bool = False,
     ):
         if not 路径点列表:
             raise ValueError("路径点列表不能为空")
@@ -1163,6 +1216,17 @@ class 巡航控制器:
         self.日志函数 = 日志函数
         self.停止事件 = 停止事件
         self.记录器 = 记录器
+        self.路线段列表 = list(路线段列表 or [])
+        self.路线段回调 = 路线段回调
+        self.中间段终点对正 = bool(中间段终点对正)
+        self._路线段起点 = {
+            segment.起点索引: (index, len(self.路线段列表), segment)
+            for index, segment in enumerate(self.路线段列表, start=1)
+        }
+        self._中间段终点 = {
+            segment.终点索引 for segment in self.路线段列表[:-1]
+        }
+        self._已通知路线段 = None
         self._最近成功状态: tuple[int, int, float] | None = None
         self._待处理状态: tuple[int, int, float] | None = None
         self._连续沿用次数 = 0
@@ -1182,6 +1246,25 @@ class 巡航控制器:
         self._转向不收敛触发 = False
         self._近点位保护触发 = False
         设置控制诊断状态(self.定位器, "待机")
+
+    def _通知路线段(self, 路径索引: int) -> None:
+        当前段 = self._路线段起点.get(路径索引)
+        if 当前段 is None or self._已通知路线段 == 路径索引:
+            return
+        self._已通知路线段 = 路径索引
+        序号, 总数, segment = 当前段
+        setattr(self.定位器, "当前路线段", f"{序号}/{总数} {Path(segment.路径).name}")
+        写日志(
+            self.日志函数,
+            "event=route_segment",
+            序号=f"{序号}/{总数}",
+            文件=segment.路径,
+        )
+        if self.路线段回调 is not None:
+            try:
+                self.路线段回调(序号, 总数, segment.路径)
+            except Exception:
+                pass
 
     def _检查紧急停止(self) -> None:
         if 处理esc紧急停止(getattr(self, "停止事件", None)):
@@ -1523,6 +1606,7 @@ class 巡航控制器:
                     raise RuntimeError("巡航超过最大步数，疑似未收敛")
                 步数 += 1
                 当前点 = self.路径点列表[当前索引]
+                self._通知路线段(当前索引)
                 x, y, 当前角度 = self._读取状态_带重试()
                 取出连续输出 = getattr(self.执行器, "取出连续输出像素", None)
                 if callable(取出连续输出):
@@ -1542,6 +1626,9 @@ class 巡航控制器:
                             动作数=len(路线动作列表),
                         )
                         self.执行器.执行路线动作(路线动作列表)
+                    if self.中间段终点对正 and 当前索引 in self._中间段终点:
+                        _, _, 动作后角度 = self._读取状态_带重试()
+                        self._执行终点对正(当前点, 动作后角度)
                     if 当前索引 == len(self.路径点列表) - 1:
                         if self.终点对正:
                             self._执行终点对正(当前点, 当前角度)
@@ -1692,7 +1779,7 @@ class 巡航控制器:
 
 
 def 巡航(
-    路径文件: str,
+    路径文件,
     到点阈值: int = 默认到点阈值,
     精准模式: bool = 默认精准模式,
     终点对正: bool = 默认终点对正,
@@ -1702,10 +1789,20 @@ def 巡航(
     视角速度倍率=默认视角速度倍率,
     YOLO状态函数=None,
     游戏窗口句柄: int | None = None,
+    路线段回调=None,
+    中间段终点对正: bool = False,
 ) -> None:
     校验到点阈值(到点阈值)
     视角速度倍率 = 规范化视角速度倍率(视角速度倍率)
-    路径点列表 = 读取路径(路径文件, 自动路线点距=当前模式自动路线点距())
+    if isinstance(路径文件, (str, Path)):
+        单一路径 = str(路径文件)
+        路径点列表 = 读取路径(单一路径, 自动路线点距=当前模式自动路线点距())
+        路线段列表 = [路线段信息(单一路径, 0, len(路径点列表) - 1)]
+    else:
+        路径点列表, 路线段列表 = 读取连续路径(
+            路径文件,
+            自动路线点距=当前模式自动路线点距(),
+        )
     # 按当前角度模式取参（text 已提高大角差阈值）
     if 是否增强角度模式():
         重置每度像素校准(TEXT_每度像素)
@@ -1733,6 +1830,9 @@ def 巡航(
         日志函数=日志函数,
         停止事件=停止事件,
         记录器=记录器,
+        路线段列表=路线段列表,
+        路线段回调=路线段回调,
+        中间段终点对正=中间段终点对正,
     )
     控制器.运行()
 

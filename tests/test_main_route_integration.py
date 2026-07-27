@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
 import 主界面 as main_ui
@@ -32,3 +33,19 @@ def test_q_anchor_keeps_snapshot_pose_and_action_order() -> None:
 
     assert (point.x, point.y, point.angle, point.自动路线) == (10, 20, 123.5, True)
     assert point.actions == actions
+
+
+def test_回放区域提供可见路线队列和完整管理按钮() -> None:
+    source = inspect.getsource(main_ui.合并主界面._build_ui)
+
+    for text in (
+        "路线播放队列",
+        "加入队列",
+        "批量浏览",
+        "上移",
+        "下移",
+        "移除",
+        "清空",
+        "编辑选中",
+    ):
+        assert text in source

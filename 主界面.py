@@ -60,6 +60,7 @@ LOGS_DIR = ROOT / "logs"
 USER_SETTINGS_PATH = ROOT / "用户设置.json"
 PREVIEW_W = 720
 START_DELAY_MS = 3000
+ROUTE_JOIN_WARNING_DISTANCE = 50
 
 
 def _ensure_dirs() -> None:
@@ -95,6 +96,32 @@ def _list_route_files() -> List[Path]:
             seen.add(key)
             out.append(p)
     return out
+
+
+def _路线键(path: str) -> str:
+    return os.path.normcase(os.path.abspath(os.path.normpath(str(path))))
+
+
+def 添加路线到队列(当前队列, 待添加路线) -> list[str]:
+    结果 = [str(path) for path in 当前队列]
+    已有 = {_路线键(path) for path in 结果}
+    for path in 待添加路线:
+        value = str(path).strip()
+        key = _路线键(value) if value else ""
+        if value and key not in 已有:
+            结果.append(value)
+            已有.add(key)
+    return 结果
+
+
+def 移动路线队列项(当前队列, 索引: int, 偏移: int) -> tuple[list[str], int]:
+    结果 = list(当前队列)
+    if not 0 <= 索引 < len(结果):
+        return 结果, 索引
+    新索引 = max(0, min(len(结果) - 1, 索引 + int(偏移)))
+    if 新索引 != 索引:
+        结果[索引], 结果[新索引] = 结果[新索引], 结果[索引]
+    return 结果, 新索引
 
 
 def 构建动作锚点(state, actions) -> 路线点:
@@ -151,6 +178,7 @@ class 合并主界面:
         self.recording = False
         self.recording_paused = False
         self.cruising = False
+        self.route_queue: list[str] = []
         self._recorded_route_points: list[路线点] = []
         self._q_down = False
         self._action_window = None
@@ -180,6 +208,7 @@ class 合并主界面:
         self._log_path = None
         self._log_fn = None
         self._last_saved: Optional[Path] = None
+        self._route_queue_controls = []
 
         # UI 变量
         self.pose_var = tk.StringVar(value="坐标: -- | 角度: --")
@@ -328,15 +357,66 @@ class 合并主界面:
             r1, textvariable=self.route_var, state="readonly", width=56
         )
         self.route_combo.pack(side="left", padx=6, fill="x", expand=True)
-        ttk.Button(r1, text="刷新", command=self._refresh_route_list, width=8).pack(
+        btn_route_refresh = ttk.Button(
+            r1, text="刷新", command=self._refresh_route_list, width=8
+        )
+        btn_route_refresh.pack(
             side="left", padx=2
         )
-        ttk.Button(r1, text="浏览…", command=self._browse_route, width=8).pack(
+        btn_route_add = ttk.Button(
+            r1, text="加入队列", command=self._add_selected_route, width=10
+        )
+        btn_route_add.pack(
             side="left", padx=2
         )
-        ttk.Button(r1, text="编辑动作", command=self._edit_selected_route, width=9).pack(
+        btn_route_browse = ttk.Button(
+            r1, text="批量浏览…", command=self._browse_routes, width=11
+        )
+        btn_route_browse.pack(
             side="left", padx=2
         )
+        ttk.Label(cruise, text="路线播放队列（从上到下连续回放）").pack(
+            anchor="w", pady=(6, 2)
+        )
+        queue_row = ttk.Frame(cruise)
+        queue_row.pack(fill="x")
+        self.route_queue_tree = ttk.Treeview(
+            queue_row,
+            columns=("order", "name", "path"),
+            show="headings",
+            height=4,
+            selectmode="browse",
+        )
+        self.route_queue_tree.heading("order", text="顺序")
+        self.route_queue_tree.heading("name", text="路线名称")
+        self.route_queue_tree.heading("path", text="完整路径")
+        self.route_queue_tree.column("order", width=48, anchor="center", stretch=False)
+        self.route_queue_tree.column("name", width=260, stretch=False)
+        self.route_queue_tree.column("path", width=560)
+        self.route_queue_tree.pack(side="left", fill="x", expand=True)
+        self.route_queue_tree.bind("<Double-1>", lambda _event: self._edit_queue_route())
+        queue_buttons = ttk.Frame(queue_row)
+        queue_buttons.pack(side="left", padx=(6, 0))
+        btn_queue_up = ttk.Button(queue_buttons, text="上移", command=self._move_queue_up, width=8)
+        btn_queue_down = ttk.Button(queue_buttons, text="下移", command=self._move_queue_down, width=8)
+        btn_queue_remove = ttk.Button(queue_buttons, text="移除", command=self._remove_queue_route, width=8)
+        btn_queue_clear = ttk.Button(queue_buttons, text="清空", command=self._clear_route_queue, width=8)
+        btn_queue_edit = ttk.Button(queue_buttons, text="编辑选中", command=self._edit_queue_route, width=8)
+        for row_index, button in enumerate(
+            (btn_queue_up, btn_queue_down, btn_queue_remove, btn_queue_clear, btn_queue_edit)
+        ):
+            button.grid(row=row_index // 2, column=row_index % 2, padx=2, pady=2)
+        self._route_queue_controls = [
+            self.route_combo,
+            btn_route_refresh,
+            btn_route_add,
+            btn_route_browse,
+            btn_queue_up,
+            btn_queue_down,
+            btn_queue_remove,
+            btn_queue_clear,
+            btn_queue_edit,
+        ]
         r2 = ttk.Frame(cruise)
         r2.pack(fill="x", pady=(6, 0))
         ttk.Label(r2, text="到点阈值:").pack(side="left")
@@ -462,6 +542,12 @@ class 合并主界面:
         route = data.get("所选路线")
         if isinstance(route, str):
             self.route_var.set(route)
+        queue_values = data.get("路线队列")
+        if isinstance(queue_values, list):
+            self.route_queue = 添加路线到队列(
+                [],
+                [path for path in queue_values if isinstance(path, str)],
+            )
         self._update_speed_label()
 
     def _save_settings(self) -> None:
@@ -486,6 +572,7 @@ class 合并主界面:
             "到点阈值": arrival,
             "精准模式": bool(self.precise_var.get()),
             "所选路线": str(self.route_var.get()),
+            "路线队列": list(self.route_queue),
         }
         try:
             USER_SETTINGS_PATH.write_text(
@@ -669,15 +756,43 @@ class 合并主界面:
         if self.detecting:
             messagebox.showinfo("提示", "请先停止识别，再开始回放，避免争抢截图。")
             return
-        route = self.route_var.get().strip()
-        if not route:
+        routes = tuple(self.route_queue)
+        if not routes:
+            selected_route = self.route_var.get().strip()
+            routes = (selected_route,) if selected_route else ()
+        if not routes:
             messagebox.showerror("启动失败", "请先选择路线文件")
             return
         try:
-            route = 巡航模块.校验路线文件(route)
+            routes = tuple(巡航模块.校验路线文件(path) for path in routes)
+            route_points, route_segments = 巡航模块.读取连续路径(
+                routes,
+                自动路线点距=巡航模块.当前模式自动路线点距(),
+            )
         except ValueError as exc:
             messagebox.showerror("启动失败", str(exc))
             return
+        distant_connections = [
+            (index, *item)
+            for index, item in enumerate(
+                巡航模块.计算路线衔接距离(route_points, route_segments),
+                start=1,
+            )
+            if item[2] > ROUTE_JOIN_WARNING_DISTANCE
+        ]
+        if distant_connections:
+            details = "\n".join(
+                f"第 {index}/{len(routes) - 1} 个衔接："
+                f"{Path(previous.路径).name} → {Path(following.路径).name}，"
+                f"距离 {distance} 像素"
+                for index, previous, following, distance in distant_connections
+            )
+            if not messagebox.askyesno(
+                "路线衔接较远",
+                f"以下路线段的首尾距离超过 {ROUTE_JOIN_WARNING_DISTANCE} 像素：\n\n"
+                f"{details}\n\n仍要继续回放吗？",
+            ):
+                return
         if not self._try_init_cruise_locator(silent=False):
             messagebox.showerror(
                 "启动失败",
@@ -702,21 +817,31 @@ class 合并主界面:
         self.btn_cruise_stop.config(state="normal")
         self.btn_detect_start.config(state="disabled")
         self._set_angle_radios(False)
+        self._set_route_queue_controls(False)
         delay = START_DELAY_MS // 1000
         label = 识别模块.当前角度模式标签()
         self.status_var.set(
-            f"{巡航模块.构建开始状态文本(delay)} | 角度={label} | 到点={到点}"
+            f"{巡航模块.构建开始状态文本(delay)} | 共 {len(routes)} 段 | "
+            f"角度={label} | 到点={到点}"
         )
         定位器 = self.巡航定位器
         精准 = bool(self.precise_var.get())
         视角速度倍率 = float(self.speed_var.get())
+
+        def route_progress(index: int, total: int, path: str) -> None:
+            self._queue.put(
+                (
+                    "cruise_progress",
+                    {"序号": index, "总数": total, "路径": path},
+                )
+            )
 
         def worker() -> None:
             try:
                 # 直接调 巡航，可传入到点阈值 / 精准模式
                 _, log_fn = 巡航模块.创建日志记录器("巡航工具")
                 巡航模块.巡航(
-                    route,
+                    routes,
                     到点阈值=到点,
                     精准模式=精准,
                     视角速度倍率=视角速度倍率,
@@ -725,8 +850,10 @@ class 合并主界面:
                     停止事件=self._cruise_stop,
                     YOLO状态函数=self._queue_yolo_status,
                     游戏窗口句柄=self._cruise_game_hwnd,
+                    路线段回调=route_progress,
+                    中间段终点对正=len(routes) > 1,
                 )
-                self._queue.put(("cruise_done", "寻路已结束"))
+                self._queue.put(("cruise_done", f"{len(routes)} 段路线已全部回放完成"))
             except 巡航模块.紧急停止异常:
                 self._queue.put(("cruise_done", "已通过双击 Esc 停止"))
             except Exception as exc:
@@ -768,6 +895,7 @@ class 合并主界面:
             self.btn_cruise_stop.config(state="disabled")
             self.btn_detect_start.config(state="normal")
             self._set_angle_radios(True)
+            self._set_route_queue_controls(True)
             self.status_var.set("已停止巡航")
         else:
             self.status_var.set("正在停止巡航…")
@@ -799,16 +927,117 @@ class 合并主界面:
             self.route_var.set(labels[0])
         elif self.route_var.get() and self.route_var.get() not in labels:
             self.route_var.set(labels[0] if labels else "")
+        self._refresh_route_queue_view()
 
-    def _browse_route(self) -> None:
-        path = filedialog.askopenfilename(
-            title="选择路线文件",
+    def _selected_queue_index(self) -> int | None:
+        tree = getattr(self, "route_queue_tree", None)
+        if tree is None:
+            return None
+        selected = tree.selection()
+        if not selected:
+            return None
+        try:
+            return int(selected[0])
+        except (TypeError, ValueError):
+            return None
+
+    def _refresh_route_queue_view(self, select_index: int | None = None) -> None:
+        tree = getattr(self, "route_queue_tree", None)
+        if tree is None:
+            return
+        tree.delete(*tree.get_children())
+        for index, path in enumerate(self.route_queue):
+            tree.insert(
+                "",
+                "end",
+                iid=str(index),
+                values=(index + 1, Path(path).name, path),
+            )
+        if select_index is not None:
+            self._highlight_route_queue(select_index)
+
+    def _highlight_route_queue(self, index: int) -> None:
+        tree = getattr(self, "route_queue_tree", None)
+        if tree is None or not 0 <= index < len(self.route_queue):
+            return
+        item = str(index)
+        tree.selection_set(item)
+        tree.focus(item)
+        tree.see(item)
+
+    def _add_selected_route(self) -> None:
+        path = self.route_var.get().strip()
+        if not path:
+            messagebox.showerror("加入失败", "请先选择路线文件")
+            return
+        updated = 添加路线到队列(self.route_queue, [path])
+        if len(updated) == len(self.route_queue):
+            self.status_var.set(f"路线已在队列中：{Path(path).name}")
+            return
+        self.route_queue = updated
+        self._refresh_route_queue_view(len(self.route_queue) - 1)
+        self.status_var.set(f"已加入第 {len(self.route_queue)} 段：{Path(path).name}")
+
+    def _browse_routes(self) -> None:
+        paths = filedialog.askopenfilenames(
+            title="批量选择路线文件",
             initialdir=str(ROUTES_DIR if ROUTES_DIR.is_dir() else ROOT),
             filetypes=[("路线文件", "*.jsonl *.txt"), ("005 JSONL 路线", "*.jsonl"), ("旧 TXT 路线", "*.txt")],
         )
-        if path:
-            self.route_var.set(path)
-            self._refresh_route_list(select=path)
+        if not paths:
+            return
+        self.route_var.set(paths[0])
+        before = len(self.route_queue)
+        self.route_queue = 添加路线到队列(self.route_queue, paths)
+        self._refresh_route_queue_view(len(self.route_queue) - 1)
+        self.status_var.set(
+            f"已加入 {len(self.route_queue) - before} 段，队列共 {len(self.route_queue)} 段"
+        )
+
+    def _move_queue(self, offset: int) -> None:
+        index = self._selected_queue_index()
+        if index is None:
+            self.status_var.set("请先选中队列中的路线")
+            return
+        self.route_queue, index = 移动路线队列项(self.route_queue, index, offset)
+        self._refresh_route_queue_view(index)
+
+    def _move_queue_up(self) -> None:
+        self._move_queue(-1)
+
+    def _move_queue_down(self) -> None:
+        self._move_queue(1)
+
+    def _remove_queue_route(self) -> None:
+        index = self._selected_queue_index()
+        if index is None:
+            self.status_var.set("请先选中要移除的路线")
+            return
+        removed = self.route_queue.pop(index)
+        next_index = min(index, len(self.route_queue) - 1)
+        self._refresh_route_queue_view(next_index if next_index >= 0 else None)
+        self.status_var.set(f"已移除：{Path(removed).name}")
+
+    def _clear_route_queue(self) -> None:
+        self.route_queue.clear()
+        self._refresh_route_queue_view()
+        self.status_var.set("路线播放队列已清空")
+
+    def _edit_queue_route(self) -> None:
+        index = self._selected_queue_index()
+        if index is not None:
+            self.route_var.set(self.route_queue[index])
+        self._edit_selected_route()
+
+    def _set_route_queue_controls(self, enabled: bool) -> None:
+        for control in getattr(self, "_route_queue_controls", []):
+            state = "readonly" if enabled and control is self.route_combo else (
+                "normal" if enabled else "disabled"
+            )
+            control.config(state=state)
+        tree = getattr(self, "route_queue_tree", None)
+        if tree is not None:
+            tree.state(["!disabled"] if enabled else ["disabled"])
 
     def _edit_selected_route(self) -> None:
         if self.recording or self.cruising:
@@ -974,6 +1203,14 @@ class 合并主界面:
                 self._restore_window()
             elif kind == "cruise_done":
                 self.status_var.set(str(payload))
+            elif kind == "cruise_progress":
+                index = int(payload["序号"])
+                total = int(payload["总数"])
+                path = str(payload["路径"])
+                self._highlight_route_queue(index - 1)
+                self.status_var.set(
+                    f"正在执行第 {index}/{total} 段：{Path(path).name}"
+                )
             elif kind == "yolo_status":
                 self._on_yolo_status(payload)  # type: ignore[arg-type]
             elif kind == "cruise_error":
@@ -987,6 +1224,7 @@ class 合并主界面:
                 self.btn_cruise_stop.config(state="disabled")
                 self.btn_detect_start.config(state="normal")
                 self._set_angle_radios(True)
+                self._set_route_queue_controls(True)
                 self._restore_window()
             elif kind in {"look_test_done", "look_test_error"}:
                 self._look_test_thread = None

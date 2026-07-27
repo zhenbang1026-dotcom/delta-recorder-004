@@ -77,6 +77,7 @@ def _settings_app() -> main_ui.合并主界面:
     app.arrival_var = _Var(3)
     app.precise_var = _Var(False)
     app.route_var = _Var("")
+    app.route_queue = []
     return app
 
 
@@ -131,6 +132,7 @@ def test有效配置可保存并完整恢复(tmp_path: Path, monkeypatch: pytest
     app.arrival_var.set(7)
     app.precise_var.set(True)
     app.route_var.set(r"D:\routes\demo.txt")
+    app.route_queue = [r"D:\routes\part1.jsonl", r"D:\routes\part2.jsonl"]
 
     app._save_settings()
 
@@ -140,6 +142,7 @@ def test有效配置可保存并完整恢复(tmp_path: Path, monkeypatch: pytest
         "到点阈值": 7,
         "精准模式": True,
         "所选路线": r"D:\routes\demo.txt",
+        "路线队列": [r"D:\routes\part1.jsonl", r"D:\routes\part2.jsonl"],
     }
 
     restored = _settings_app()
@@ -150,6 +153,10 @@ def test有效配置可保存并完整恢复(tmp_path: Path, monkeypatch: pytest
     assert restored.arrival_var.get() == 7
     assert restored.precise_var.get() is True
     assert restored.route_var.get() == r"D:\routes\demo.txt"
+    assert restored.route_queue == [
+        r"D:\routes\part1.jsonl",
+        r"D:\routes\part2.jsonl",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -252,16 +259,35 @@ def test开始回放先最小化且延迟透传倍率(monkeypatch: pytest.Monkey
     monkeypatch.setattr(main_ui.巡航模块, "构建开始状态文本", lambda delay: f"delay={delay}")
     monkeypatch.setattr(main_ui.巡航模块, "创建日志记录器", lambda _name: (None, None))
     monkeypatch.setattr(main_ui.识别模块, "当前角度模式标签", lambda: "Legacy")
-    cruise_calls: list[dict[str, Any]] = []
+    cruise_calls: list[tuple[Any, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        main_ui.巡航模块,
+        "读取连续路径",
+        lambda routes, **_kwargs: (
+            [SimpleNamespace(x=0, y=0)],
+            [
+                SimpleNamespace(路径=routes[0], 起点索引=0, 终点索引=0),
+                SimpleNamespace(路径=routes[1], 起点索引=1, 终点索引=1),
+            ],
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main_ui.巡航模块,
+        "计算路线衔接距离",
+        lambda _points, _segments: [],
+        raising=False,
+    )
     monkeypatch.setattr(
         main_ui.巡航模块,
         "巡航",
-        lambda _route, **kwargs: cruise_calls.append(kwargs),
+        lambda route, **kwargs: cruise_calls.append((route, kwargs)),
     )
     app = _button_app()
     app.detecting = False
     app.cruising = False
     app.route_var.set("route.txt")
+    app.route_queue = ["part1.jsonl", "part2.jsonl"]
     app.speed_var.set(2.4)
     app.巡航定位器 = object()
     app._cruise_stop = threading.Event()
@@ -269,6 +295,7 @@ def test开始回放先最小化且延迟透传倍率(monkeypatch: pytest.Monkey
     app._apply_angle_mode = lambda: None
     app._try_init_cruise_locator = lambda silent=False: True
     app._poll_cruise_preview = lambda: None
+    app._set_route_queue_controls = lambda _enabled: None
 
     app.start_cruise()
 
@@ -281,7 +308,67 @@ def test开始回放先最小化且延迟透传倍率(monkeypatch: pytest.Monkey
     assert len(_Thread.instances) == 1
     assert _Thread.instances[0].started is True
     _Thread.instances[0].target()
-    assert cruise_calls[0]["视角速度倍率"] == 2.4
+    assert cruise_calls[0][0] == ("part1.jsonl", "part2.jsonl")
+    assert cruise_calls[0][1]["视角速度倍率"] == 2.4
+    assert cruise_calls[0][1]["中间段终点对正"] is True
+    assert callable(cruise_calls[0][1]["路线段回调"])
+
+
+def test路线进度消息更新当前段状态() -> None:
+    app = _button_app()
+    app._queue = queue.Queue()
+    selected = []
+    app._highlight_route_queue = selected.append
+    app._queue.put(
+        (
+            "cruise_progress",
+            {"序号": 2, "总数": 5, "路径": r"D:\routes\井盖到航空箱.jsonl"},
+        )
+    )
+
+    app._drain_queue()
+
+    assert selected == [1]
+    assert app.status_var.get() == "正在执行第 2/5 段：井盖到航空箱.jsonl"
+
+
+def test路线衔接超过50像素且取消时不会启动回放(monkeypatch: pytest.MonkeyPatch) -> None:
+    prompts = []
+    app = _button_app()
+    app.route_queue = ["part1.jsonl", "part2.jsonl"]
+    app._cruise_stop = threading.Event()
+    app._try_init_cruise_locator = lambda silent=False: (_ for _ in ()).throw(
+        AssertionError("取消衔接警告后不应初始化定位器")
+    )
+    segments = [
+        SimpleNamespace(路径="part1.jsonl", 起点索引=0, 终点索引=0),
+        SimpleNamespace(路径="part2.jsonl", 起点索引=1, 终点索引=1),
+    ]
+    monkeypatch.setattr(main_ui.巡航模块, "校验路线文件", lambda route: route)
+    monkeypatch.setattr(
+        main_ui.巡航模块,
+        "读取连续路径",
+        lambda _routes, **_kwargs: (
+            [SimpleNamespace(x=0, y=0), SimpleNamespace(x=100, y=0)],
+            segments,
+        ),
+    )
+    monkeypatch.setattr(
+        main_ui.巡航模块,
+        "计算路线衔接距离",
+        lambda _points, _segments: [(segments[0], segments[1], 100)],
+    )
+    monkeypatch.setattr(
+        main_ui.messagebox,
+        "askyesno",
+        lambda title, message: prompts.append((title, message)) or False,
+    )
+
+    app.start_cruise()
+
+    assert not app.cruising
+    assert prompts and "距离 100 像素" in prompts[0][1]
+    assert not any(call[0] == "iconify" for call in app.root.calls)
 
 
 def test停止识别或回放会立即恢复主窗口(monkeypatch: pytest.MonkeyPatch) -> None:
