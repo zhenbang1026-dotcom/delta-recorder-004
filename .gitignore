@@ -11,4 +11,6 @@ location.txt
 用户设置.json
 动作代码块.json
 *.log
+nuitka-crash-report.xml
+发布/
 .DS_Store
