@@ -133,6 +133,43 @@ def testtext拒绝偏离校准中心的圆盘(tmp_path: Path) -> None:
     assert recognizer.最近详情["error"].startswith("圆盘中心偏离校准中心: ")
 
 
+def testtext启动自动校准允许十到十五像素圆盘偏移并只在本次有效(tmp_path: Path) -> None:
+    calibration = tmp_path / "lv.txt"
+    calibration.write_text(
+        "SRC_CROP:0,0,100,100\n"
+        "PRECISE_CENTER:90,90\n",
+        encoding="utf-8",
+    )
+    recognizer = 角度模块.角度识别器(str(calibration))
+
+    angle = recognizer.识别角度(图像数据=_创建零度箭头图())
+
+    assert angle is not None
+    assert recognizer.最近详情["auto_calibrated"] is True
+    assert recognizer.最近详情["origin"] == pytest.approx(
+        recognizer.最近详情["disk"]
+    )
+    assert recognizer.最近详情["disk_center_error"] == pytest.approx(0.0)
+
+    recognizer.重置自动校准()
+    assert recognizer.自动校准待定 is True
+
+
+def testtext自动校准最大偏移仍拒绝明显错误圆盘(tmp_path: Path) -> None:
+    calibration = tmp_path / "lv.txt"
+    calibration.write_text(
+        "SRC_CROP:0,0,100,100\n"
+        "PRECISE_CENTER:80,80\n",
+        encoding="utf-8",
+    )
+    recognizer = 角度模块.角度识别器(str(calibration))
+
+    angle = recognizer.识别角度(图像数据=_创建零度箭头图())
+
+    assert angle is None
+    assert "自动校准最大允许偏差" in recognizer.最近详情["error"]
+
+
 def test默认识别器可识别当前雷达坐标的绿色箭头() -> None:
     image = np.zeros((193, 193, 3), dtype=np.uint8)
     hsv_pixel = np.uint8([[[63, 120, 220]]])

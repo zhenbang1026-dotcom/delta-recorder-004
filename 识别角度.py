@@ -21,6 +21,7 @@ import numpy as np
 DEFAULT_RADAR_LTRB = (34, 78, 227, 271)
 箭头最小连通域面积 = 20
 圆盘中心最大偏差 = 3.0
+自动校准最大偏差 = 15.0
 
 
 def _load_capture():
@@ -62,6 +63,13 @@ class 角度识别器:
         self.静默 = bool(静默)
         self.角度映射数据缓存 = None
         self.最近详情 = None
+        self._运行时中心 = None
+        self.自动校准待定 = True
+
+    def 重置自动校准(self) -> None:
+        """清除本次运行的 TEXT 圆盘中心校准，不修改校准文件。"""
+        self._运行时中心 = None
+        self.自动校准待定 = True
 
     def _log(self, msg: str) -> None:
         if not self.静默:
@@ -150,8 +158,8 @@ class 角度识别器:
             return None
 
         裁剪_x1, 裁剪_y1, 裁剪_x2, 裁剪_y2 = cache["crop"]
-        精准中心_x = cache["center_x"]
-        精准中心_y = cache["center_y"]
+        校准中心_x = cache["center_x"]
+        校准中心_y = cache["center_y"]
 
         裁剪图 = 图像数据[裁剪_y1:裁剪_y2, 裁剪_x1:裁剪_x2]
         if 裁剪图.size == 0:
@@ -195,11 +203,30 @@ class 角度识别器:
         箭头_x, 箭头_y = float(质心s[箭头_label][0]), float(质心s[箭头_label][1])
         圆心_x, 圆心_y = float(质心s[圆_label][0]), float(质心s[圆_label][1])
         圆盘面积 = int(统计[圆_label, cv2.CC_STAT_AREA])
+        固定中心偏差 = math.hypot(圆心_x - 校准中心_x, 圆心_y - 校准中心_y)
+        自动校准 = False
+        if self._运行时中心 is None:
+            if 固定中心偏差 <= 圆盘中心最大偏差:
+                self._运行时中心 = (校准中心_x, 校准中心_y)
+                self.自动校准待定 = False
+            elif self.自动校准待定 and 固定中心偏差 <= 自动校准最大偏差:
+                self._运行时中心 = (圆心_x, 圆心_y)
+                self.自动校准待定 = False
+                自动校准 = True
+            else:
+                return self._失败(
+                    f"圆盘中心偏离校准中心: {固定中心偏差:.3f} > {圆盘中心最大偏差:.3f}"
+                    f"（自动校准最大允许偏差: {自动校准最大偏差:.3f}）"
+                )
+
+        精准中心_x, 精准中心_y = self._运行时中心
         圆盘中心偏差 = math.hypot(圆心_x - 精准中心_x, 圆心_y - 精准中心_y)
         if 圆盘中心偏差 > 圆盘中心最大偏差:
             return self._失败(
                 f"圆盘中心偏离校准中心: {圆盘中心偏差:.3f} > {圆盘中心最大偏差:.3f}"
             )
+        if self._运行时中心 != (校准中心_x, 校准中心_y):
+            自动校准 = True
 
         dx = 箭头_x - 精准中心_x
         dy = 箭头_y - 精准中心_y
@@ -225,6 +252,7 @@ class 角度识别器:
             "arrow_area": 箭头面积,
             "disk_area": 圆盘面积,
             "disk_center_error": float(圆盘中心偏差),
+            "auto_calibrated": 自动校准,
             "mask": 掩码颜色,
             "debug": 放大图,
         }
@@ -262,6 +290,13 @@ class 多颜色角度识别器:
         self.雷达范围 = getattr(首个识别器, "雷达范围", DEFAULT_RADAR_LTRB)
         self.箭头HSV = getattr(首个识别器, "箭头HSV", None)
         self.最近详情 = None
+
+    def 重置自动校准(self) -> None:
+        """重置蓝、绿、黄各通道的运行时中心。"""
+        for _, 识别器 in self.颜色识别器列表:
+            reset = getattr(识别器, "重置自动校准", None)
+            if callable(reset):
+                reset()
 
     def _读取校准数据(self):
         return self.颜色识别器列表[0][1]._读取校准数据()

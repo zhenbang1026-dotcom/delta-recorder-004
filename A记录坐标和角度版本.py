@@ -66,7 +66,12 @@ def 当前角度区域() -> tuple[int, int, int, int]:
 
 
 def 设置角度模式(mode: str) -> str:
-    return 角度模块.set_angle_mode(mode)
+    mode = 角度模块.set_angle_mode(mode)
+    if mode == getattr(角度模块, "ANGLE_MODE_TEXT", "text"):
+        reset = getattr(角度模块, "重置TEXT自动校准", None)
+        if callable(reset):
+            reset()
+    return mode
 
 
 def 当前角度模式() -> str:

@@ -117,6 +117,14 @@ def _get_text_stabilizer():
     return _text_stabilizer
 
 
+def 重置TEXT自动校准() -> None:
+    """重置 TEXT 多颜色识别器的运行时中心。"""
+    recognizer = _get_text_recognizer()
+    reset = getattr(recognizer, "重置自动校准", None)
+    if callable(reset):
+        reset()
+
+
 def force_text_stabilizer_angle(angle: float) -> float:
     """转向后稳采样写回滤波器，避免下一帧又被旧 last 拖住。"""
     return _get_text_stabilizer().force(float(angle))
