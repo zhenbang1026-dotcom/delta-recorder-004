@@ -25,6 +25,12 @@ DEFAULT_RADAR_LTRB = (34, 78, 227, 271)
 
 
 def _load_capture():
+    try:
+        import 截图模块 as mod  # type: ignore
+        return mod
+    except ModuleNotFoundError:
+        pass
+
     base = Path(__file__).resolve().parent
     target = unicodedata.normalize("NFC", "截图模块")
     for py in base.glob("*.py"):
@@ -38,11 +44,7 @@ def _load_capture():
             assert spec.loader is not None
             spec.loader.exec_module(mod)
             return mod
-    try:
-        import 截图模块 as mod  # type: ignore
-        return mod
-    except ModuleNotFoundError:
-        return None
+    return None
 
 
 class 角度识别器:

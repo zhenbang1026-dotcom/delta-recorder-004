@@ -93,8 +93,17 @@ def _get_text_recognizer():
     global _text_recognizer
     if _text_recognizer is not None:
         return _text_recognizer
+    import importlib
     import importlib.util
     import unicodedata
+
+    try:
+        mod = importlib.import_module("识别角度")
+    except ModuleNotFoundError:
+        mod = None
+    if mod is not None:
+        _text_recognizer = mod.默认识别器(静默=True)
+        return _text_recognizer
 
     base = Path(__file__).resolve().parent
     target = unicodedata.normalize("NFC", "识别角度")
@@ -840,6 +849,12 @@ def analyze_fullscreen_angle(
 # ===========================================================================
 
 def _load_capture():
+    try:
+        import 截图模块 as mod  # type: ignore
+        return mod
+    except ModuleNotFoundError:
+        pass
+
     import importlib.util
     import unicodedata
 
@@ -855,11 +870,7 @@ def _load_capture():
             sys.modules[name] = mod
             spec.loader.exec_module(mod)
             return mod
-    try:
-        import 截图模块 as mod  # type: ignore
-        return mod
-    except ModuleNotFoundError:
-        return None
+    return None
 
 
 def grab_bbox_bgr(bbox: tuple[int, int, int, int]) -> tuple[np.ndarray, str]:

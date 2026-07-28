@@ -67,8 +67,15 @@ $参数 = @(
     "--output-filename=三角洲录制器005.exe"
 )
 
-foreach ($脚本 in Get-ChildItem -LiteralPath $临时项目目录 -File -Filter "*.py") {
-    $参数 += "--include-data-files=$($脚本.FullName)=$($脚本.Name)"
+foreach ($模块名 in @(
+    "A测试角度识别",
+    "A测试模版匹配",
+    "识别角度",
+    "截图模块",
+    "A记录坐标和角度版本",
+    "Win32键鼠模块"
+)) {
+    $参数 += "--include-module=$模块名"
 }
 
 $参数 += "--include-data-dir=$(Join-Path $临时项目目录 'maps')=maps"
