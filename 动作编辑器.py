@@ -37,6 +37,15 @@ from 窗口定位 import 定位窗口到右下角
 动作代码块文件 = Path(__file__).resolve().with_name("动作代码块.json")
 
 
+def 绑定Esc自动保存(window, callback: Callable[[], object]) -> None:
+    """将 Esc 绑定到当前窗口的保存/完成回调，并阻止事件传给父窗口。"""
+    def handle(_event=None):
+        callback()
+        return "break"
+
+    window.bind("<Escape>", handle)
+
+
 def 动作块范围(actions: Iterable[路线动作], index: int) -> tuple[int, int]:
     """返回选中动作所在块的左闭右开范围；子项本身是单项块。"""
     items = list(actions)
@@ -463,6 +472,7 @@ class 动作参数窗口:
         self.window.title("编辑动作" if action else "添加动作")
         self.window.transient(parent)
         self.window.protocol("WM_DELETE_WINDOW", self._关闭)
+        绑定Esc自动保存(self.window, self._保存)
         self.window.grab_set()
 
         outer = ttk.Frame(self.window, padding=12)
@@ -586,6 +596,7 @@ class 动作列表窗口:
         self.window.title(title)
         self.window.transient(parent)
         self.window.protocol("WM_DELETE_WINDOW", self._取消)
+        绑定Esc自动保存(self.window, self._完成)
         self.window.grab_set()
 
         outer = ttk.Frame(self.window, padding=12)
@@ -903,6 +914,10 @@ class 动作列表窗口:
             )
         ttk.Button(controls, text="关闭", command=close, width=10).pack(side="right")
         dialog.protocol("WM_DELETE_WINDOW", close)
+        if 允许删除:
+            绑定Esc自动保存(dialog, close)
+        else:
+            绑定Esc自动保存(dialog, insert)
         refresh()
         names.selection_set(0)
         定位窗口到右下角(dialog, 480, 360, 参照窗口=self.window)
@@ -948,6 +963,7 @@ class 路线编辑窗口:
         self.window.title("编辑已保存路线动作（坐标只读）")
         self.window.transient(parent)
         self.window.protocol("WM_DELETE_WINDOW", self._关闭)
+        绑定Esc自动保存(self.window, lambda: self._保存(确认覆盖=False))
         self.window.grab_set()
 
         outer = ttk.Frame(self.window, padding=12)
@@ -995,25 +1011,28 @@ class 路线编辑窗口:
         self.points[index] = self.points[index].替换动作(actions)
         self._刷新(index)
 
-    def _保存(self) -> None:
+    def _保存(self, *, 确认覆盖: bool = True) -> None:
         target = self.source
         if self.source.suffix.lower() not in {".jsonl", ".json"}:
-            selected = filedialog.asksaveasfilename(
-                parent=self.window,
-                title="旧 TXT 另存为 005 JSONL 路线",
-                initialdir=str(self.source.parent),
-                initialfile=self.source.with_suffix(".jsonl").name,
-                defaultextension=".jsonl",
-                filetypes=[("005 JSONL 路线", "*.jsonl")],
-            )
-            if not selected:
-                return
-            target = Path(selected)
-            if target.exists() and not messagebox.askyesno(
+            if 确认覆盖:
+                selected = filedialog.asksaveasfilename(
+                    parent=self.window,
+                    title="旧 TXT 另存为 005 JSONL 路线",
+                    initialdir=str(self.source.parent),
+                    initialfile=self.source.with_suffix(".jsonl").name,
+                    defaultextension=".jsonl",
+                    filetypes=[("005 JSONL 路线", "*.jsonl")],
+                )
+                if not selected:
+                    return
+                target = Path(selected)
+            else:
+                target = self.source.with_suffix(".jsonl")
+            if 确认覆盖 and target.exists() and not messagebox.askyesno(
                 "确认覆盖", f"目标 JSONL 已存在，确定覆盖？\n{target}", parent=self.window
             ):
                 return
-        elif not messagebox.askyesno("确认覆盖", f"确定覆盖保存？\n{target}", parent=self.window):
+        elif 确认覆盖 and not messagebox.askyesno("确认覆盖", f"确定覆盖保存？\n{target}", parent=self.window):
             return
         try:
             写入路线文件(target, self.points)
