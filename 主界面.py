@@ -41,6 +41,8 @@ import win32gui
 from PIL import Image, ImageTk
 
 import A记录坐标和角度版本 as 识别模块
+import A测试模版匹配 as 地图监视模块
+import A测试角度识别 as 角度监视模块
 import Win32键鼠模块 as 键鼠模块
 import 自动录制坐标工具 as 录制模块
 import 巡航脚本 as 巡航模块
@@ -67,6 +69,19 @@ def _ensure_dirs() -> None:
     ROUTES_DIR.mkdir(parents=True, exist_ok=True)
     RECORD_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def 读取大地图尺寸(path: str | Path) -> tuple[int, int]:
+    path = Path(path)
+    if path.suffix.lower() not in {".bmp", ".png", ".jpg", ".jpeg"}:
+        raise ValueError("大地图仅支持 BMP、PNG、JPG、JPEG 图片")
+    if not path.is_file():
+        raise FileNotFoundError(f"大地图不存在：{path}")
+    image = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError(f"OpenCV 无法读取大地图：{path}")
+    height, width = image.shape[:2]
+    return int(width), int(height)
 
 
 def _bgr_to_photo(image_bgr: np.ndarray, max_width: int = PREVIEW_W) -> ImageTk.PhotoImage:
@@ -208,10 +223,17 @@ class 合并主界面:
         self._log_fn = None
         self._last_saved: Optional[Path] = None
         self._route_queue_controls = []
+        self._map_monitor_window = None
+        self._map_monitor_app = None
+        self._angle_monitor_window = None
+        self._angle_monitor_app = None
 
         # UI 变量
         self.pose_var = tk.StringVar(value="坐标: -- | 角度: --")
         self.status_var = tk.StringVar(value="就绪。先选角度模式，再「开始识别」")
+        self.map_path_var = tk.StringVar(value=str(MAP_PATH.resolve()))
+        self.map_monitor_var = tk.BooleanVar(value=False)
+        self.angle_monitor_var = tk.BooleanVar(value=False)
         self.angle_mode_var = tk.StringVar(value="legacy")
         self.angle_hint_var = tk.StringVar(value="")
         self.route_var = tk.StringVar(value="")
@@ -224,9 +246,9 @@ class 合并主界面:
         self.look_duration_var = tk.StringVar(value="300")
         self.look_x_random_var = tk.StringVar(value="4")
 
+        self._load_settings()
         self._init_backends()
         self._build_ui()
-        self._load_settings()
         self._refresh_route_list()
         self._apply_angle_mode()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -237,12 +259,11 @@ class 合并主界面:
 
     # ------------------------------------------------------------------ init
     def _map_path_for_cv2(self) -> str:
-        """cv2.imread 不支持中文绝对路径，优先用相对路径 maps/DB.png。"""
-        rel = Path("maps") / "DB.png"
-        if rel.is_file():
-            return str(rel).replace("\\", "/")
+        selected = Path(self.map_path_var.get()).expanduser()
+        if selected.is_file():
+            return str(selected.resolve())
         if MAP_PATH.is_file():
-            return str(MAP_PATH)
+            return str(MAP_PATH.resolve())
         return 巡航模块.地图文件路径
 
     def _init_backends(self) -> None:
@@ -277,7 +298,7 @@ class 合并主界面:
         map_path = self._map_path_for_cv2()
         mode = self.angle_mode_var.get() if hasattr(self, "angle_mode_var") else "legacy"
         last_err = None
-        for path_try in (map_path, "maps/DB.png", 巡航模块.地图文件路径):
+        for path_try in (map_path,):
             try:
                 self.巡航定位器 = 巡航模块.实时定位器(
                     地图路径=path_try,
@@ -322,6 +343,36 @@ class 合并主界面:
         ttk.Label(mode, textvariable=self.angle_hint_var, foreground="#555555").pack(
             anchor="w", pady=(4, 0)
         )
+
+        # 大地图与识别监视
+        monitor = ttk.LabelFrame(self.root, text="大地图与识别监视", padding=8)
+        monitor.pack(fill="x", padx=12, pady=4)
+        ttk.Label(monitor, text="大地图:").pack(side="left")
+        ttk.Entry(
+            monitor,
+            textvariable=self.map_path_var,
+            state="readonly",
+            width=48,
+        ).pack(side="left", padx=(6, 4), fill="x", expand=True)
+        self.btn_map_select = ttk.Button(
+            monitor,
+            text="选择大地图…",
+            command=self._选择大地图,
+            width=13,
+        )
+        self.btn_map_select.pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(
+            monitor,
+            text="小地图匹配大地图",
+            variable=self.map_monitor_var,
+            command=self._切换小地图监视,
+        ).pack(side="left", padx=(0, 10))
+        ttk.Checkbutton(
+            monitor,
+            text="角度识别监视",
+            variable=self.angle_monitor_var,
+            command=self._切换角度监视,
+        ).pack(side="left")
 
         # 识别 / 录制
         rec = ttk.LabelFrame(self.root, text="识别与录制（录制中按 Q 暂停并添加动作）", padding=8)
@@ -539,6 +590,10 @@ class 合并主界面:
         if isinstance(precise, bool):
             self.precise_var.set(precise)
 
+        map_path = data.get("所选大地图")
+        if isinstance(map_path, str) and Path(map_path).is_file():
+            self.map_path_var.set(str(Path(map_path).resolve()))
+
         route = data.get("所选路线")
         if isinstance(route, str):
             self.route_var.set(route)
@@ -571,6 +626,7 @@ class 合并主界面:
             "视角速度倍率": round(speed, 1),
             "到点阈值": arrival,
             "精准模式": bool(self.precise_var.get()),
+            "所选大地图": str(self.map_path_var.get()),
             "所选路线": str(self.route_var.get()),
             "路线队列": list(self.route_queue),
         }
@@ -1286,6 +1342,190 @@ class 合并主界面:
         except Exception:
             pass
 
+    # ------------------------------------------------------------------ map / monitors
+    def _应用大地图(self, path: str | Path) -> tuple[tuple[int, int], tuple[int, int]]:
+        new_path = Path(path).resolve()
+        new_size = 读取大地图尺寸(new_path)
+        old_path = Path(self._map_path_for_cv2())
+        old_size = 读取大地图尺寸(old_path)
+        mode = self.angle_mode_var.get()
+        new_detector = 识别模块.实时坐标角度识别器(
+            地图匹配器=识别模块.单独坐标识别器(str(new_path)),
+            角度模式=mode,
+        )
+        new_cruise_locator = 巡航模块.实时定位器(
+            地图路径=str(new_path),
+            角度模式=mode,
+        )
+        self.识别器 = new_detector
+        self.巡航定位器 = new_cruise_locator
+        self.map_path_var.set(str(new_path))
+        return old_size, new_size
+
+    def _选择大地图(self) -> None:
+        if self.detecting or self.cruising:
+            messagebox.showwarning("暂时不能切换", "请先停止识别或回放，再切换大地图。")
+            return
+        current = Path(self._map_path_for_cv2())
+        selected = filedialog.askopenfilename(
+            title="选择大地图",
+            initialdir=str(current.parent),
+            filetypes=[
+                ("大地图图片", "*.bmp *.png *.jpg *.jpeg"),
+                ("BMP", "*.bmp"),
+                ("PNG", "*.png"),
+                ("JPEG", "*.jpg *.jpeg"),
+            ],
+        )
+        if not selected:
+            return
+        try:
+            old_size = 读取大地图尺寸(current)
+            new_size = 读取大地图尺寸(selected)
+        except Exception as exc:
+            messagebox.showerror("地图无效", str(exc))
+            return
+        if old_size != new_size and not messagebox.askyesno(
+            "地图尺寸不同",
+            f"当前地图为 {old_size[0]}×{old_size[1]}，新地图为 "
+            f"{new_size[0]}×{new_size[1]}。\n\n"
+            "旧路线坐标通常不能直接用于新地图，是否仍要切换？",
+        ):
+            return
+        try:
+            self._应用大地图(selected)
+        except Exception as exc:
+            messagebox.showerror("切换失败", f"新地图定位器初始化失败，已保留原地图。\n\n{exc}")
+            return
+        if self.map_monitor_var.get():
+            if self._map_monitor_app is not None:
+                try:
+                    self._map_monitor_app.on_closing()
+                except Exception:
+                    pass
+            elif self._map_monitor_window is not None:
+                try:
+                    self._map_monitor_window.destroy()
+                except tk.TclError:
+                    pass
+            self._map_monitor_window = None
+            self._map_monitor_app = None
+            self.map_monitor_var.set(True)
+            self._切换小地图监视()
+        self.status_var.set(f"大地图已切换：{Path(selected).name}（{new_size[0]}×{new_size[1]}）")
+
+    def _显示监视窗口(self, window, width: int, height: int, *, upper: bool) -> None:
+        try:
+            previous = int(win32gui.GetForegroundWindow() or 0)
+        except Exception:
+            previous = 0
+        position = 定位窗口到右上角 if upper else 定位窗口到右下角
+        position(window, width, height, 参照窗口=self.root)
+        try:
+            window.update_idletasks()
+            hwnd = 获取外层窗口句柄(window)
+            exstyle = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            no_activate = getattr(win32con, "WS_EX_NOACTIVATE", 0x08000000)
+            tool_window = getattr(win32con, "WS_EX_TOOLWINDOW", 0x00000080)
+            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, exstyle | no_activate | tool_window)
+            flags = win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW
+            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, flags)
+            if previous and win32gui.IsWindow(previous):
+                win32gui.SetForegroundWindow(previous)
+        except Exception:
+            pass
+
+    def _切换小地图监视(self) -> None:
+        if not self.map_monitor_var.get():
+            self._关闭小地图监视窗口()
+            return
+        try:
+            if self._map_monitor_window is None or not self._map_monitor_window.winfo_exists():
+                self._map_monitor_window = tk.Toplevel(self.root)
+                self._map_monitor_app = 地图监视模块.MapLocatorApp(
+                    self._map_monitor_window,
+                    big_map_path=self._map_path_for_cv2(),
+                )
+                self._map_monitor_window.protocol("WM_DELETE_WINDOW", self._关闭小地图监视窗口)
+            self._map_monitor_window.deiconify()
+            self._显示监视窗口(self._map_monitor_window, 640, 700, upper=True)
+            self._map_monitor_app.start_detection()
+        except Exception as exc:
+            self.map_monitor_var.set(False)
+            self._map_monitor_window = None
+            self._map_monitor_app = None
+            messagebox.showerror("监视窗口启动失败", str(exc))
+
+    def _关闭小地图监视窗口(self) -> None:
+        self.map_monitor_var.set(False)
+        if self._map_monitor_app is not None:
+            self._map_monitor_app.stop_detection()
+        if self._map_monitor_window is not None:
+            try:
+                self._map_monitor_window.withdraw()
+            except tk.TclError:
+                pass
+
+    def _切换角度监视(self) -> None:
+        if not self.angle_monitor_var.get():
+            self._关闭角度监视窗口()
+            return
+        try:
+            if self._angle_monitor_window is None or not self._angle_monitor_window.winfo_exists():
+                self._angle_monitor_window = tk.Toplevel(self.root)
+                self._angle_monitor_app = 角度监视模块.RealtimeAngleApp(self._angle_monitor_window)
+                self._angle_monitor_app.angle_mode_var.set(self.angle_mode_var.get())
+                self._angle_monitor_app._on_angle_mode_changed()
+                self._angle_monitor_window.protocol("WM_DELETE_WINDOW", self._关闭角度监视窗口)
+            self._angle_monitor_window.deiconify()
+            self._显示监视窗口(self._angle_monitor_window, 960, 720, upper=False)
+            self._angle_monitor_app.start()
+        except Exception as exc:
+            self.angle_monitor_var.set(False)
+            self._angle_monitor_window = None
+            self._angle_monitor_app = None
+            messagebox.showerror("监视窗口启动失败", str(exc))
+
+    def _关闭角度监视窗口(self) -> None:
+        self.angle_monitor_var.set(False)
+        if self._angle_monitor_app is not None:
+            self._angle_monitor_app.stop()
+        if self._angle_monitor_window is not None:
+            try:
+                self._angle_monitor_window.withdraw()
+            except tk.TclError:
+                pass
+
+    def _销毁监视窗口(self) -> None:
+        map_app = getattr(self, "_map_monitor_app", None)
+        map_window = getattr(self, "_map_monitor_window", None)
+        angle_app = getattr(self, "_angle_monitor_app", None)
+        angle_window = getattr(self, "_angle_monitor_window", None)
+        if map_app is not None:
+            try:
+                map_app.on_closing()
+            except Exception:
+                pass
+        elif map_window is not None:
+            try:
+                map_window.destroy()
+            except tk.TclError:
+                pass
+        if angle_app is not None:
+            try:
+                angle_app.close()
+            except Exception:
+                pass
+        elif angle_window is not None:
+            try:
+                angle_window.destroy()
+            except tk.TclError:
+                pass
+        self._map_monitor_window = None
+        self._map_monitor_app = None
+        self._angle_monitor_window = None
+        self._angle_monitor_app = None
+
     def _创建YOLO窗口(self) -> None:
         if self._yolo_window is not None:
             try:
@@ -1627,6 +1867,7 @@ class 合并主界面:
                 self.stop_cruise()
         except Exception:
             pass
+        self._销毁监视窗口()
         self._save_settings()
         self.root.destroy()
 

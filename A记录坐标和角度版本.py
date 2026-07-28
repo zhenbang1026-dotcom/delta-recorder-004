@@ -114,9 +114,7 @@ class 单独坐标识别器:
     """使用 A测试模版匹配.py 单独窗口同款 SIFT 识别逻辑。"""
 
     def __init__(self, 地图路径: str = 大地图路径) -> None:
-        self.big_map = cv2.imread(str(地图路径))
-        if self.big_map is None:
-            self.big_map = 地图模块.imread_unicode(地图路径)
+        self.big_map = 地图模块.imread_unicode(地图路径)
         self.big_map_gray = cv2.cvtColor(self.big_map, cv2.COLOR_BGR2GRAY)
         self.sift = cv2.SIFT_create()
         self.bf = cv2.BFMatcher(cv2.NORM_L2)

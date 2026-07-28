@@ -71,6 +71,7 @@ class _Thread:
 
 def _settings_app() -> main_ui.合并主界面:
     app = object.__new__(main_ui.合并主界面)
+    app.map_path_var = _Var(str(main_ui.MAP_PATH))
     app.angle_mode_var = _Var("legacy")
     app.speed_var = _Var(1.5)
     app.speed_label_var = _Var("1.5x")
@@ -125,6 +126,8 @@ def test没有可用路线时清空已失效的保存路径(monkeypatch: pytest.
 
 def test有效配置可保存并完整恢复(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings_path = tmp_path / "用户设置.json"
+    map_path = tmp_path / "1.bmp"
+    map_path.touch()
     monkeypatch.setattr(main_ui, "USER_SETTINGS_PATH", settings_path)
     app = _settings_app()
     app.angle_mode_var.set("text")
@@ -133,6 +136,7 @@ def test有效配置可保存并完整恢复(tmp_path: Path, monkeypatch: pytest
     app.precise_var.set(True)
     app.route_var.set(r"D:\routes\demo.txt")
     app.route_queue = [r"D:\routes\part1.jsonl", r"D:\routes\part2.jsonl"]
+    app.map_path_var.set(str(map_path))
 
     app._save_settings()
 
@@ -141,6 +145,7 @@ def test有效配置可保存并完整恢复(tmp_path: Path, monkeypatch: pytest
         "视角速度倍率": 2.4,
         "到点阈值": 7,
         "精准模式": True,
+        "所选大地图": str(map_path),
         "所选路线": r"D:\routes\demo.txt",
         "路线队列": [r"D:\routes\part1.jsonl", r"D:\routes\part2.jsonl"],
     }
@@ -152,6 +157,7 @@ def test有效配置可保存并完整恢复(tmp_path: Path, monkeypatch: pytest
     assert restored.speed_label_var.get() == "2.4x"
     assert restored.arrival_var.get() == 7
     assert restored.precise_var.get() is True
+    assert restored.map_path_var.get() == str(map_path.resolve())
     assert restored.route_var.get() == r"D:\routes\demo.txt"
     assert restored.route_queue == [
         r"D:\routes\part1.jsonl",

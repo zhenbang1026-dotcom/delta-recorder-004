@@ -4,6 +4,7 @@ import importlib.util
 import json
 import math
 import random
+import statistics
 import sys
 import unicodedata
 from dataclasses import dataclass
@@ -66,6 +67,13 @@ TEXT_单次最大转向角度 = 38.0
 大地图最小特征数 = 10
 终点对正角度阈值 = 3.0
 终点对正最大尝试次数 = 5
+动作终点停稳秒数 = 0.25
+动作终点坐标采样数 = 5
+动作终点采样间隔秒数 = 0.03
+动作终点坐标容差 = 1
+动作终点位置最大补正次数 = 3
+动作终点转向等待秒数 = 0.08
+动作终点恢复角度阈值 = 2.0
 局部匹配搜索边距 = 220
 模板匹配缩放 = 2.0
 模板匹配阈值 = 0.6
@@ -671,7 +679,11 @@ class 实时定位器:
             except Exception:
                 角度截图区域 = 角度区域
         self.角度截图区域 = 角度截图区域
-        self.大地图 = self._cv2.imread(str(Path(地图路径)))
+        try:
+            encoded = self._np.fromfile(str(Path(地图路径)), dtype=self._np.uint8)
+            self.大地图 = self._cv2.imdecode(encoded, self._cv2.IMREAD_COLOR)
+        except Exception:
+            self.大地图 = None
         if self.大地图 is None:
             raise FileNotFoundError(f"未找到地图文件: {地图路径}")
         self.大地图灰度 = self._cv2.cvtColor(self.大地图, self._cv2.COLOR_BGR2GRAY)
@@ -1245,6 +1257,7 @@ class 巡航控制器:
         self._上次转向坐标: tuple[int, int] | None = None
         self._转向不收敛触发 = False
         self._近点位保护触发 = False
+        self._最近动作终点坐标: tuple[int, int] | None = None
         设置控制诊断状态(self.定位器, "待机")
 
     def _通知路线段(self, 路径索引: int) -> None:
@@ -1573,14 +1586,21 @@ class 巡航控制器:
         微调角度 = max(-转向不收敛微调角度, min(转向不收敛微调角度, 角度差))
         return 动作指令("前进并微调", 鼠标像素=角度差转鼠标像素(微调角度 * self.参数.精准缩放))
 
-    def _执行终点对正(self, 终点: 路径点, 当前角度: float) -> None:
+    def _执行终点对正(
+        self,
+        终点: 路径点,
+        当前角度: float,
+        *,
+        角度阈值: float = 终点对正角度阈值,
+        最大尝试次数: int = 终点对正最大尝试次数,
+    ) -> float:
         已尝试次数 = 0
-        while 已尝试次数 < 终点对正最大尝试次数:
+        while 已尝试次数 < 最大尝试次数:
             设置控制诊断状态(self.定位器, "终点对正中")
             setattr(self.定位器, "最近动作类型", "终点对正")
             角度差 = 计算最短角度差(当前角度, 终点.angle)
-            if abs(角度差) <= 终点对正角度阈值:
-                return
+            if abs(角度差) <= 角度阈值:
+                return 当前角度
             self.执行器.执行(self._终点对正动作(当前角度, 终点))
             写日志(
                 self.日志函数,
@@ -1595,6 +1615,68 @@ class 巡航控制器:
             if self.循环间隔 > 0:
                 self._等待并检查停止(self.循环间隔)
             _, _, 当前角度 = self._读取状态_带重试()
+        return 当前角度
+
+    def _读取动作终点中位状态(self) -> tuple[int, int, float]:
+        状态列表 = []
+        for 索引 in range(动作终点坐标采样数):
+            状态列表.append(self._读取状态_带重试())
+            if 索引 < 动作终点坐标采样数 - 1 and 动作终点采样间隔秒数 > 0:
+                self._等待并检查停止(动作终点采样间隔秒数)
+        x = int(statistics.median(状态[0] for 状态 in 状态列表))
+        y = int(statistics.median(状态[1] for 状态 in 状态列表))
+        self._最近动作终点坐标 = (x, y)
+        return x, y, float(状态列表[-1][2])
+
+    def _执行动作终点对准(self, 终点: 路径点) -> tuple[int, int, float]:
+        self.执行器.执行(动作指令("切换下一个点"))
+        设置控制诊断状态(self.定位器, "动作终点停稳中")
+        if 动作终点停稳秒数 > 0:
+            self._等待并检查停止(动作终点停稳秒数)
+
+        最佳距离 = float("inf")
+        最终状态 = self._读取动作终点中位状态()
+        for 补正次数 in range(动作终点位置最大补正次数 + 1):
+            x, y, 当前角度 = 最终状态
+            距离 = 计算距离(x, y, 终点.x, 终点.y)
+            最佳距离 = min(最佳距离, float(距离))
+            if 距离 <= 动作终点坐标容差 or 补正次数 >= 动作终点位置最大补正次数:
+                break
+
+            目标角度 = 计算目标角度(x, y, 终点.x, 终点.y)
+            当前角度 = self._执行终点对正(
+                路径点(终点.x, 终点.y, 目标角度),
+                当前角度,
+                角度阈值=动作终点恢复角度阈值,
+                最大尝试次数=3,
+            )
+            if 动作终点转向等待秒数 > 0:
+                self._等待并检查停止(动作终点转向等待秒数)
+            持续时间 = min(0.18, max(0.06, 距离 * 0.04))
+            设置控制诊断状态(
+                self.定位器,
+                f"动作终点低速补正 {补正次数 + 1}/{动作终点位置最大补正次数}",
+            )
+            self.执行器.执行(动作指令("终点低速补正", 持续时间=持续时间))
+            最终状态 = self._读取动作终点中位状态()
+
+        x, y, 当前角度 = 最终状态
+        当前角度 = self._执行终点对正(
+            终点,
+            当前角度,
+            角度阈值=动作终点恢复角度阈值,
+        )
+        最终状态 = (x, y, 当前角度)
+        写日志(
+            self.日志函数,
+            "event=action_endpoint_align",
+            目标=f"({终点.x}, {终点.y})",
+            最终坐标=f"{x},{y}",
+            最佳距离=f"{最佳距离:.0f}",
+            最终角度=f"{当前角度:.2f}",
+            目标角度=f"{终点.angle:.2f}",
+        )
+        return 最终状态
 
     def 运行(self, 最大步数: int | None = None) -> None:
         当前索引 = 0
@@ -1619,6 +1701,18 @@ class 巡航控制器:
                 if 距离 <= self.到点阈值:
                     路线动作列表 = getattr(当前点, "actions", ())
                     if 路线动作列表:
+                        try:
+                            x, y, 当前角度 = self._执行动作终点对准(当前点)
+                            距离 = 计算距离(x, y, 当前点.x, 当前点.y)
+                        except 紧急停止异常:
+                            raise
+                        except Exception as exc:
+                            写日志(
+                                self.日志函数,
+                                "event=action_endpoint_align_failed",
+                                目标=f"({当前点.x}, {当前点.y})",
+                                错误=str(exc),
+                            )
                         写日志(
                             self.日志函数,
                             "event=route_actions",
@@ -2054,6 +2148,15 @@ class Win32执行器:
                 self.输入模块.键盘按下("w")
                 self._正在前进 = True
             self._更新视角(动作.鼠标像素)
+            return
+        if 动作.类型 == "终点低速补正":
+            self._停止前进()
+            self._更新视角(0)
+            self.输入模块.键盘按下("w")
+            self._正在前进 = True
+            if 动作.持续时间 > 0:
+                self._等待并检查停止(动作.持续时间)
+            self._停止前进()
             return
         if 动作.类型 == "切换下一个点":
             self._更新视角(0)

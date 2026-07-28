@@ -257,7 +257,7 @@ class MapLocatorApp:
         display_w (int): 缩放后显示宽度
         display_h (int): 缩放后显示高度
     """
-    def __init__(self, root):
+    def __init__(self, root, big_map_path: str | Path = BIG_MAP_PATH):
         """
         初始化定位器应用
         
@@ -271,11 +271,10 @@ class MapLocatorApp:
         """
         self.root = root
         self.root.title("小地图定位器")
+        self.big_map_path = str(big_map_path)
 
         # 读取大地图并转换为灰度图
-        self.big_map = cv2.imread(BIG_MAP_PATH)
-        if self.big_map is None:
-            raise FileNotFoundError(f"未找到大地图文件: {BIG_MAP_PATH}")
+        self.big_map = imread_unicode(self.big_map_path)
         self.big_map_gray = cv2.cvtColor(self.big_map, cv2.COLOR_BGR2GRAY)
 
         # 仅初始化一次 SIFT 与匹配器，并预计算大地图特征

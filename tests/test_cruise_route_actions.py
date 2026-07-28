@@ -66,6 +66,9 @@ def test_final_waypoint_actions_run_before_executor_stops(monkeypatch) -> None:
             return 10, 20, 30.0
 
     class Executor:
+        def 执行(self, action):
+            events.append(("move", action.类型))
+
         def 执行路线动作(self, actions):
             events.append(("actions", tuple(actions)))
 
@@ -73,6 +76,8 @@ def test_final_waypoint_actions_run_before_executor_stops(monkeypatch) -> None:
             events.append("stop")
 
     monkeypatch.setattr(cruise, "处理esc紧急停止", lambda _event=None: False)
+    monkeypatch.setattr(cruise, "动作终点停稳秒数", 0.0)
+    monkeypatch.setattr(cruise, "动作终点采样间隔秒数", 0.0)
     controller = cruise.巡航控制器(
         路径点列表=[cruise.路径点(10, 20, 30.0, False, (comment,))],
         定位器=Locator(),
@@ -84,4 +89,95 @@ def test_final_waypoint_actions_run_before_executor_stops(monkeypatch) -> None:
 
     controller.运行()
 
-    assert events == [("actions", (comment,)), "stop"]
+    assert events == [
+        ("move", "切换下一个点"),
+        ("actions", (comment,)),
+        "stop",
+    ]
+
+
+def test_action_waypoint_uses_five_sample_median_before_actions(monkeypatch) -> None:
+    comment = 路线动作("comment", {"text": "测试中位数"})
+    states = iter(
+        [
+            (10, 20, 30.0),
+            (9, 21, 30.0),
+            (10, 20, 30.0),
+            (100, 200, 30.0),
+            (11, 19, 30.0),
+            (10, 20, 30.0),
+            (10, 20, 30.0),
+        ]
+    )
+    events: list[object] = []
+
+    class Locator:
+        def 读取状态(self):
+            return next(states)
+
+    class Executor:
+        def 执行(self, action):
+            events.append(("move", action.类型))
+
+        def 执行路线动作(self, actions):
+            events.append(("actions", tuple(actions)))
+
+        def 停止(self):
+            events.append("stop")
+
+    monkeypatch.setattr(cruise, "处理esc紧急停止", lambda _event=None: False)
+    monkeypatch.setattr(cruise, "动作终点停稳秒数", 0.0)
+    monkeypatch.setattr(cruise, "动作终点采样间隔秒数", 0.0)
+    controller = cruise.巡航控制器(
+        路径点列表=[cruise.路径点(10, 20, 30.0, False, (comment,))],
+        定位器=Locator(),
+        执行器=Executor(),
+        到点阈值=3,
+        参数=cruise.普通模式参数(),
+        循环间隔=0.0,
+    )
+
+    controller.运行()
+
+    assert controller._最近动作终点坐标 == (10, 20)
+    assert events[-2:] == [("actions", (comment,)), "stop"]
+
+
+def test_action_waypoint_limits_low_speed_corrections_and_still_runs_actions(
+    monkeypatch,
+) -> None:
+    comment = 路线动作("comment", {"text": "补正失败仍继续"})
+    events: list[object] = []
+
+    class Locator:
+        def 读取状态(self):
+            return 12, 20, 0.0
+
+    class Executor:
+        def 执行(self, action):
+            events.append(("move", action.类型))
+
+        def 执行路线动作(self, actions):
+            events.append(("actions", tuple(actions)))
+
+        def 停止(self):
+            events.append("stop")
+
+    monkeypatch.setattr(cruise, "处理esc紧急停止", lambda _event=None: False)
+    monkeypatch.setattr(cruise, "动作终点停稳秒数", 0.0)
+    monkeypatch.setattr(cruise, "动作终点采样间隔秒数", 0.0)
+    monkeypatch.setattr(cruise, "动作终点转向等待秒数", 0.0)
+    controller = cruise.巡航控制器(
+        路径点列表=[cruise.路径点(10, 20, 0.0, False, (comment,))],
+        定位器=Locator(),
+        执行器=Executor(),
+        到点阈值=3,
+        参数=cruise.普通模式参数(),
+        循环间隔=0.0,
+    )
+
+    controller.运行()
+
+    correction_count = events.count(("move", "终点低速补正"))
+    assert correction_count == 3
+    assert ("actions", (comment,)) in events

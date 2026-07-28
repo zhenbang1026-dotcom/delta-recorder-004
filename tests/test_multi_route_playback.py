@@ -88,6 +88,7 @@ def test_控制器通知当前段并在中间段终点执行对正(monkeypatch) 
         路线段回调=lambda index, total, path: progress.append((index, total, path)),
         中间段终点对正=True,
     )
+    controller._执行动作终点对准 = lambda _point: (0, 0, 10.0)
     controller._执行终点对正 = lambda point, angle: aligned.append((point.angle, angle))
 
     controller.运行()
