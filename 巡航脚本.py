@@ -718,14 +718,21 @@ class 实时定位器:
             地图匹配器=合并识别模块.单独坐标识别器(地图路径)
         )
 
-    def 设置角度模式(self, 模式: str) -> str:
+    def 设置角度模式(
+        self,
+        模式: str,
+        角度截图区域: tuple[int, int, int, int] | None = None,
+    ) -> str:
         """切换角度算法并同步 ROI；截图后端不变。"""
         mode = 合并识别模块.设置角度模式(模式)
         self.角度模式 = mode
-        try:
-            self.角度截图区域 = 合并识别模块.当前角度区域()
-        except Exception:
-            self.角度截图区域 = 角度区域_text if mode == "text" else 角度区域_旧
+        if 角度截图区域 is not None:
+            self.角度截图区域 = tuple(int(v) for v in 角度截图区域)
+        else:
+            try:
+                self.角度截图区域 = 合并识别模块.当前角度区域()
+            except Exception:
+                self.角度截图区域 = 角度区域_text if mode == "text" else 角度区域_旧
         self.最近状态 = None
         self._text最近有效角度 = None
         self._text最近有效角度时间 = None

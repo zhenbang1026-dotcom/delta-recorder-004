@@ -64,12 +64,13 @@ def test_both_ui_entries_keep_legacy_as_default() -> None:
         assert _assigned_stringvar_default(name, "angle_mode_var") == "legacy"
 
 
-def test_backend_initialization_remains_forced_to_legacy() -> None:
+def test_main_backend_uses_loaded_mode_while_standalone_recorder_defaults_to_legacy() -> None:
     main_source = _source("主界面.py")
     recorder_source = _source("自动录制坐标工具.py")
 
-    assert '识别模块.设置角度模式("legacy")' in main_source
-    assert '角度模式="legacy"' in main_source
+    assert "mode = self.angle_mode_var.get()" in main_source
+    assert "识别模块.设置角度模式(mode)" in main_source
+    assert "角度模式=mode" in main_source
     assert '实时坐标角度识别器(角度模式="legacy")' in recorder_source
 
 

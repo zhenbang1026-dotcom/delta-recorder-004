@@ -73,6 +73,13 @@ def _settings_app() -> main_ui.合并主界面:
     app = object.__new__(main_ui.合并主界面)
     app.map_path_var = _Var(str(main_ui.MAP_PATH))
     app.angle_mode_var = _Var("legacy")
+    app.small_map_box = (57, 116, 200, 235)
+    app.angle_boxes = {
+        "legacy": (119, 161, 146, 188),
+        "text": (34, 78, 227, 271),
+    }
+    app.small_map_box_var = _Var("57,116,200,235")
+    app.angle_box_var = _Var("119,161,146,188")
     app.speed_var = _Var(1.5)
     app.speed_label_var = _Var("1.5x")
     app.arrival_var = _Var(3)
@@ -103,6 +110,42 @@ def _button_app() -> main_ui.合并主界面:
 
 def test用户配置位于项目根目录() -> None:
     assert main_ui.USER_SETTINGS_PATH == main_ui.ROOT / "用户设置.json"
+
+
+def test默认识别范围保持旧路线兼容值() -> None:
+    assert main_ui.DEFAULT_SMALL_MAP_BOX == (57, 116, 200, 235)
+    assert main_ui.DEFAULT_ANGLE_BOXES == {
+        "legacy": (119, 161, 146, 188),
+        "text": (34, 78, 227, 271),
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("57,116,200,235", (57, 116, 200, 235)),
+        ("57，116，200，235", (57, 116, 200, 235)),
+        ("57 116 200 235", (57, 116, 200, 235)),
+    ],
+)
+def test识别范围支持逗号中文逗号和空格(text: str, expected: tuple[int, ...]) -> None:
+    assert main_ui.解析识别范围(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "1,2,3",
+        "1,2,3,4,5",
+        "a,2,3,4",
+        "-1,2,3,4",
+        "1,2,1,4",
+        "1,2,3,2",
+    ],
+)
+def test识别范围拒绝非法坐标(text: str) -> None:
+    with pytest.raises(ValueError):
+        main_ui.解析识别范围(text)
 
 
 def test启动时先加载所选路线再用当前路线列表校验() -> None:
@@ -137,6 +180,11 @@ def test有效配置可保存并完整恢复(tmp_path: Path, monkeypatch: pytest
     app.route_var.set(r"D:\routes\demo.txt")
     app.route_queue = [r"D:\routes\part1.jsonl", r"D:\routes\part2.jsonl"]
     app.map_path_var.set(str(map_path))
+    app.small_map_box = (60, 120, 203, 239)
+    app.angle_boxes = {
+        "legacy": (120, 162, 147, 189),
+        "text": (35, 79, 228, 272),
+    }
 
     app._save_settings()
 
@@ -148,6 +196,11 @@ def test有效配置可保存并完整恢复(tmp_path: Path, monkeypatch: pytest
         "所选大地图": str(map_path),
         "所选路线": r"D:\routes\demo.txt",
         "路线队列": [r"D:\routes\part1.jsonl", r"D:\routes\part2.jsonl"],
+        "小地图范围": [60, 120, 203, 239],
+        "角度范围": {
+            "legacy": [120, 162, 147, 189],
+            "text": [35, 79, 228, 272],
+        },
     }
 
     restored = _settings_app()
@@ -163,6 +216,52 @@ def test有效配置可保存并完整恢复(tmp_path: Path, monkeypatch: pytest
         r"D:\routes\part1.jsonl",
         r"D:\routes\part2.jsonl",
     ]
+    assert restored.small_map_box == (60, 120, 203, 239)
+    assert restored.angle_boxes == {
+        "legacy": (120, 162, 147, 189),
+        "text": (35, 79, 228, 272),
+    }
+    assert restored.small_map_box_var.get() == "60,120,203,239"
+    assert restored.angle_box_var.get() == "35,79,228,272"
+
+
+def test切换角度模式显示各自保存的范围(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _settings_app()
+    app.detecting = False
+    app.cruising = False
+    app.recording = False
+    app.angle_hint_var = _Var("")
+    app.status_var = _Var("")
+    app.识别器 = SimpleNamespace(角度截图区域=None)
+    app.巡航定位器 = SimpleNamespace(设置角度模式=lambda *_args, **_kwargs: None)
+    app.angle_boxes = {
+        "legacy": (120, 162, 147, 189),
+        "text": (35, 79, 228, 272),
+    }
+    monkeypatch.setattr(main_ui.识别模块, "设置角度模式", lambda mode: mode)
+    monkeypatch.setattr(main_ui.识别模块, "当前角度模式标签", lambda: "TEXT")
+
+    app.angle_mode_var.set("text")
+    app._apply_angle_mode()
+
+    assert app.angle_box_var.get() == "35,79,228,272"
+    assert app.识别器.角度截图区域 == (35, 79, 228, 272)
+
+
+def test恢复默认范围只填写输入框等待用户应用() -> None:
+    app = _settings_app()
+    app.angle_mode_var.set("text")
+    app.small_map_box = (60, 120, 203, 239)
+    app.angle_boxes["text"] = (35, 79, 228, 272)
+    app.status_var = _Var("")
+
+    app._恢复默认识别范围()
+
+    assert app.small_map_box_var.get() == "57,116,200,235"
+    assert app.angle_box_var.get() == "34,78,227,271"
+    assert app.small_map_box == (60, 120, 203, 239)
+    assert app.angle_boxes["text"] == (35, 79, 228, 272)
+    assert "应用识别范围" in app.status_var.get()
 
 
 @pytest.mark.parametrize(

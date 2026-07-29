@@ -277,13 +277,19 @@ class 实时坐标角度识别器:
         角度分析器: Optional[Callable] = None,
         角度颜色=None,
         角度模式: Optional[str] = None,
+        小地图截图区域: tuple[int, int, int, int] = 小地图区域,
+        角度截图区域: tuple[int, int, int, int] | None = None,
     ) -> None:
         self.地图匹配器 = 地图匹配器 or 单独坐标识别器()
         self.角度分析器 = 角度分析器 or 角度模块.analyze_image
         self.角度颜色 = 角度颜色 or 默认角度颜色
         self.锁定角度颜色 = None
+        self.小地图截图区域 = tuple(int(v) for v in 小地图截图区域)
         if 角度模式 is not None:
             设置角度模式(角度模式)
+        self.角度截图区域 = tuple(
+            int(v) for v in (角度截图区域 or 当前角度区域())
+        )
 
     def 从截图识别(self, small_map_bgr, angle_image_bgr) -> 识别状态:
         map_result = self.地图匹配器.locate_minimap(small_map_bgr)
@@ -314,17 +320,18 @@ class 实时坐标角度识别器:
     def 读取状态(self) -> 识别状态:
         # 并集一次截图再裁（禁止对 ndarray 使用 `a or b`）
         # 角度区随模式切换（legacy 小 ROI / text 大雷达）
-        角度区 = 当前角度区域()
+        地图区 = self.小地图截图区域
+        角度区 = self.角度截图区域
         small_map_bgr = None
         angle_image_bgr = None
         if hasattr(角度模块, "grab_regions_bgr"):
-            key_map = tuple(int(v) for v in 小地图区域)
+            key_map = tuple(int(v) for v in 地图区)
             key_ang = tuple(int(v) for v in 角度区)
             crops = 角度模块.grab_regions_bgr(key_map, key_ang)
             small_map_bgr = crops.get(key_map)
             angle_image_bgr = crops.get(key_ang)
         if small_map_bgr is None:
-            small_map_bgr, _ = 角度模块.grab_bbox_bgr(小地图区域)
+            small_map_bgr, _ = 角度模块.grab_bbox_bgr(地图区)
         if angle_image_bgr is None:
             angle_image_bgr, _ = 角度模块.grab_bbox_bgr(角度区)
         return self.从截图识别(small_map_bgr, angle_image_bgr)

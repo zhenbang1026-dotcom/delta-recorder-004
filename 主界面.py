@@ -63,6 +63,11 @@ USER_SETTINGS_PATH = ROOT / "用户设置.json"
 PREVIEW_W = 720
 START_DELAY_MS = 3000
 ROUTE_JOIN_WARNING_DISTANCE = 50
+DEFAULT_SMALL_MAP_BOX = (57, 116, 200, 235)
+DEFAULT_ANGLE_BOXES = {
+    "legacy": (119, 161, 146, 188),
+    "text": (34, 78, 227, 271),
+}
 
 
 def _ensure_dirs() -> None:
@@ -82,6 +87,25 @@ def 读取大地图尺寸(path: str | Path) -> tuple[int, int]:
         raise ValueError(f"OpenCV 无法读取大地图：{path}")
     height, width = image.shape[:2]
     return int(width), int(height)
+
+
+def 解析识别范围(value: str) -> tuple[int, int, int, int]:
+    parts = str(value).replace("，", ",").replace(",", " ").split()
+    if len(parts) != 4:
+        raise ValueError("识别范围必须填写 4 个整数：x1,y1,x2,y2")
+    try:
+        x1, y1, x2, y2 = (int(item) for item in parts)
+    except ValueError as exc:
+        raise ValueError("识别范围只能填写整数：x1,y1,x2,y2") from exc
+    if min(x1, y1, x2, y2) < 0:
+        raise ValueError("识别范围坐标不能为负数")
+    if x2 <= x1 or y2 <= y1:
+        raise ValueError("识别范围必须满足 x2 > x1 且 y2 > y1")
+    return x1, y1, x2, y2
+
+
+def _格式化识别范围(value: tuple[int, int, int, int]) -> str:
+    return ",".join(str(item) for item in value)
 
 
 def _bgr_to_photo(image_bgr: np.ndarray, max_width: int = PREVIEW_W) -> ImageTk.PhotoImage:
@@ -235,6 +259,10 @@ class 合并主界面:
         self.map_monitor_var = tk.BooleanVar(value=False)
         self.angle_monitor_var = tk.BooleanVar(value=False)
         self.angle_mode_var = tk.StringVar(value="legacy")
+        self.small_map_box = DEFAULT_SMALL_MAP_BOX
+        self.angle_boxes = dict(DEFAULT_ANGLE_BOXES)
+        self.small_map_box_var = tk.StringVar(value=_格式化识别范围(self.small_map_box))
+        self.angle_box_var = tk.StringVar(value=_格式化识别范围(self.angle_boxes["legacy"]))
         self.angle_hint_var = tk.StringVar(value="")
         self.route_var = tk.StringVar(value="")
         self.arrival_var = tk.IntVar(value=3)
@@ -274,11 +302,14 @@ class 合并主界面:
             pass
 
         try:
-            识别模块.设置角度模式("legacy")
+            mode = self.angle_mode_var.get()
+            识别模块.设置角度模式(mode)
             map_path = self._map_path_for_cv2()
             self.识别器 = 识别模块.实时坐标角度识别器(
                 地图匹配器=识别模块.单独坐标识别器(map_path),
-                角度模式="legacy",
+                角度模式=mode,
+                小地图截图区域=self.small_map_box,
+                角度截图区域=self.angle_boxes[mode],
             )
         except Exception as exc:
             self.识别器 = None
@@ -303,6 +334,8 @@ class 合并主界面:
                 self.巡航定位器 = 巡航模块.实时定位器(
                     地图路径=path_try,
                     角度模式=mode,
+                    小地图截图区域=self.small_map_box,
+                    角度截图区域=self.angle_boxes[mode],
                 )
                 return True
             except Exception as exc:
@@ -343,6 +376,32 @@ class 合并主界面:
         ttk.Label(mode, textvariable=self.angle_hint_var, foreground="#555555").pack(
             anchor="w", pady=(4, 0)
         )
+        range_row = ttk.Frame(mode)
+        range_row.pack(fill="x", pady=(6, 0))
+        ttk.Label(range_row, text="小地图范围:").pack(side="left")
+        self.entry_small_map_box = ttk.Entry(
+            range_row, textvariable=self.small_map_box_var, width=19
+        )
+        self.entry_small_map_box.pack(side="left", padx=(5, 12))
+        ttk.Label(range_row, text="当前角度范围:").pack(side="left")
+        self.entry_angle_box = ttk.Entry(
+            range_row, textvariable=self.angle_box_var, width=19
+        )
+        self.entry_angle_box.pack(side="left", padx=(5, 12))
+        self.btn_apply_recognition_range = ttk.Button(
+            range_row, text="应用识别范围", command=self._应用识别范围
+        )
+        self.btn_apply_recognition_range.pack(side="left", padx=(0, 6))
+        self.btn_reset_recognition_range = ttk.Button(
+            range_row, text="恢复默认范围", command=self._恢复默认识别范围
+        )
+        self.btn_reset_recognition_range.pack(side="left")
+        self._recognition_range_controls = [
+            self.entry_small_map_box,
+            self.entry_angle_box,
+            self.btn_apply_recognition_range,
+            self.btn_reset_recognition_range,
+        ]
 
         # 大地图与识别监视
         monitor = ttk.LabelFrame(self.root, text="大地图与识别监视", padding=8)
@@ -590,6 +649,22 @@ class 合并主界面:
         if isinstance(precise, bool):
             self.precise_var.set(precise)
 
+        try:
+            saved_small_map = data.get("小地图范围")
+            if isinstance(saved_small_map, (list, tuple)):
+                self.small_map_box = 解析识别范围(",".join(map(str, saved_small_map)))
+        except ValueError:
+            pass
+        saved_angle_boxes = data.get("角度范围")
+        if isinstance(saved_angle_boxes, dict):
+            for angle_mode in ("legacy", "text"):
+                try:
+                    saved_box = saved_angle_boxes.get(angle_mode)
+                    if isinstance(saved_box, (list, tuple)):
+                        self.angle_boxes[angle_mode] = 解析识别范围(",".join(map(str, saved_box)))
+                except ValueError:
+                    pass
+
         map_path = data.get("所选大地图")
         if isinstance(map_path, str) and Path(map_path).is_file():
             self.map_path_var.set(str(Path(map_path).resolve()))
@@ -603,6 +678,8 @@ class 合并主界面:
                 [],
                 [path for path in queue_values if isinstance(path, str)],
             )
+        self.small_map_box_var.set(_格式化识别范围(self.small_map_box))
+        self.angle_box_var.set(_格式化识别范围(self.angle_boxes[self.angle_mode_var.get()]))
         self._update_speed_label()
 
     def _save_settings(self) -> None:
@@ -629,6 +706,11 @@ class 合并主界面:
             "所选大地图": str(self.map_path_var.get()),
             "所选路线": str(self.route_var.get()),
             "路线队列": list(self.route_queue),
+            "小地图范围": list(self.small_map_box),
+            "角度范围": {
+                angle_mode: list(self.angle_boxes[angle_mode])
+                for angle_mode in ("legacy", "text")
+            },
         }
         try:
             USER_SETTINGS_PATH.write_text(
@@ -647,22 +729,85 @@ class 合并主界面:
 
     # ------------------------------------------------------------------ angle
     def _apply_angle_mode(self) -> None:
-        if self.detecting or self.cruising:
+        if self.detecting or self.recording or self.cruising:
             return
         mode = self.angle_mode_var.get()
         try:
             识别模块.设置角度模式(mode)
             label = 识别模块.当前角度模式标签()
-            bbox = 识别模块.当前角度区域()
+            bbox = self.angle_boxes[mode]
+            self.angle_box_var.set(_格式化识别范围(bbox))
             self.angle_hint_var.set(
                 f"{label} | ROI {bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]} | 截图 GDI/mss"
             )
+            if self.识别器 is not None:
+                self.识别器.角度截图区域 = bbox
             if self.巡航定位器 is not None and hasattr(self.巡航定位器, "设置角度模式"):
-                self.巡航定位器.设置角度模式(mode)
+                self.巡航定位器.设置角度模式(mode, bbox)
             if not self.detecting and not self.cruising:
                 self.status_var.set(f"角度模式: {label}")
         except Exception as exc:
             self.status_var.set(f"切换角度失败: {exc}")
+
+    def _恢复默认识别范围(self) -> None:
+        mode = self.angle_mode_var.get()
+        self.small_map_box_var.set(_格式化识别范围(DEFAULT_SMALL_MAP_BOX))
+        self.angle_box_var.set(_格式化识别范围(DEFAULT_ANGLE_BOXES[mode]))
+        self.status_var.set("已填入默认范围，请点击“应用识别范围”后生效。")
+
+    def _应用识别范围(self) -> None:
+        if self.detecting or self.recording or self.cruising:
+            messagebox.showwarning("暂时不能应用", "请先停止识别、录制或回放，再应用识别范围。")
+            return
+        try:
+            small_map_box = 解析识别范围(self.small_map_box_var.get())
+            angle_box = 解析识别范围(self.angle_box_var.get())
+        except ValueError as exc:
+            messagebox.showerror("识别范围无效", str(exc))
+            return
+        if small_map_box != self.small_map_box and not messagebox.askyesno(
+            "小地图范围已改变",
+            "修改小地图范围可能改变坐标识别结果，使旧路线产生偏差。\n\n是否仍要应用？",
+        ):
+            return
+        mode = self.angle_mode_var.get()
+        map_path = self._map_path_for_cv2()
+        try:
+            new_detector = 识别模块.实时坐标角度识别器(
+                地图匹配器=识别模块.单独坐标识别器(map_path),
+                角度模式=mode,
+                小地图截图区域=small_map_box,
+                角度截图区域=angle_box,
+            )
+            new_cruise_locator = 巡航模块.实时定位器(
+                地图路径=map_path,
+                角度模式=mode,
+                小地图截图区域=small_map_box,
+                角度截图区域=angle_box,
+            )
+        except Exception as exc:
+            messagebox.showerror("应用失败", f"新识别器初始化失败，已保留原范围。\n\n{exc}")
+            return
+
+        self.识别器 = new_detector
+        self.巡航定位器 = new_cruise_locator
+        self.small_map_box = small_map_box
+        self.angle_boxes[mode] = angle_box
+        self.small_map_box_var.set(_格式化识别范围(small_map_box))
+        self.angle_box_var.set(_格式化识别范围(angle_box))
+        map_monitor_open = self.map_monitor_var.get()
+        angle_monitor_open = self.angle_monitor_var.get()
+        if map_monitor_open or angle_monitor_open:
+            self._销毁监视窗口()
+            self.map_monitor_var.set(map_monitor_open)
+            self.angle_monitor_var.set(angle_monitor_open)
+            if map_monitor_open:
+                self._切换小地图监视()
+            if angle_monitor_open:
+                self._切换角度监视()
+        self._save_settings()
+        self._apply_angle_mode()
+        self.status_var.set("识别范围已应用并保存。")
 
     # ------------------------------------------------------------------ detect
     def start_detect(self) -> None:
@@ -1352,10 +1497,14 @@ class 合并主界面:
         new_detector = 识别模块.实时坐标角度识别器(
             地图匹配器=识别模块.单独坐标识别器(str(new_path)),
             角度模式=mode,
+            小地图截图区域=self.small_map_box,
+            角度截图区域=self.angle_boxes[mode],
         )
         new_cruise_locator = 巡航模块.实时定位器(
             地图路径=str(new_path),
             角度模式=mode,
+            小地图截图区域=self.small_map_box,
+            角度截图区域=self.angle_boxes[mode],
         )
         self.识别器 = new_detector
         self.巡航定位器 = new_cruise_locator
@@ -1445,6 +1594,7 @@ class 合并主界面:
                 self._map_monitor_app = 地图监视模块.MapLocatorApp(
                     self._map_monitor_window,
                     big_map_path=self._map_path_for_cv2(),
+                    small_map_box=self.small_map_box,
                 )
                 self._map_monitor_window.protocol("WM_DELETE_WINDOW", self._关闭小地图监视窗口)
             self._map_monitor_window.deiconify()
@@ -1476,6 +1626,9 @@ class 合并主界面:
                 self._angle_monitor_app = 角度监视模块.RealtimeAngleApp(self._angle_monitor_window)
                 self._angle_monitor_app.angle_mode_var.set(self.angle_mode_var.get())
                 self._angle_monitor_app._on_angle_mode_changed()
+                self._angle_monitor_app.angle_bbox_var.set(
+                    _格式化识别范围(self.angle_boxes[self.angle_mode_var.get()])
+                )
                 self._angle_monitor_window.protocol("WM_DELETE_WINDOW", self._关闭角度监视窗口)
             self._angle_monitor_window.deiconify()
             self._显示监视窗口(self._angle_monitor_window, 960, 720, upper=False)
@@ -1767,6 +1920,8 @@ class 合并主界面:
                         for rb in sub.winfo_children():
                             if isinstance(rb, ttk.Radiobutton):
                                 rb.config(state=state)
+        for control in getattr(self, "_recognition_range_controls", []):
+            control.config(state=state)
 
     def _esc_poll(self) -> None:
         if self.cruising:

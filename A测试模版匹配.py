@@ -257,7 +257,12 @@ class MapLocatorApp:
         display_w (int): 缩放后显示宽度
         display_h (int): 缩放后显示高度
     """
-    def __init__(self, root, big_map_path: str | Path = BIG_MAP_PATH):
+    def __init__(
+        self,
+        root,
+        big_map_path: str | Path = BIG_MAP_PATH,
+        small_map_box: tuple[int, int, int, int] = SMALL_MAP_BOX,
+    ):
         """
         初始化定位器应用
         
@@ -272,6 +277,7 @@ class MapLocatorApp:
         self.root = root
         self.root.title("小地图定位器")
         self.big_map_path = str(big_map_path)
+        self.small_map_box = tuple(int(v) for v in small_map_box)
 
         # 读取大地图并转换为灰度图
         self.big_map = imread_unicode(self.big_map_path)
@@ -459,11 +465,11 @@ class MapLocatorApp:
         """
         try:
             import 截图模块 as _cap
-            small_map = _cap.grab_region(*SMALL_MAP_BOX)
+            small_map = _cap.grab_region(*self.small_map_box)
         except Exception:
             small_map = None
         if small_map is None:
-            screenshot = ImageGrab.grab(bbox=SMALL_MAP_BOX)
+            screenshot = ImageGrab.grab(bbox=self.small_map_box)
             small_map = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
 
         if small_map.shape[:2] != (SIZE2, SIZE1):
