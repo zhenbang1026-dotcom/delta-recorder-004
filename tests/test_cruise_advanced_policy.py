@@ -374,6 +374,109 @@ def test_text_near_point_large_angle_keeps_turning_in_place_by_option(
     assert 动作 == 原动作
 
 
+def _普通点转弯控制器(*, enabled=True, points=None, segments=None):
+    if points is None:
+        points = [
+            cruise.路径点(0, 0, 0.0, True),
+            cruise.路径点(10, 0, 0.0, True),
+            cruise.路径点(20, 0, 0.0, True),
+        ]
+    return cruise.巡航控制器(
+        路径点列表=points,
+        定位器=SimpleNamespace(),
+        执行器=SimpleNamespace(),
+        到点阈值=3,
+        参数=cruise.普通模式参数(),
+        普通点转弯保持疾跑=enabled,
+        路线段列表=segments,
+    )
+
+
+@pytest.mark.parametrize("角度差", [45.0, 90.0, 120.0])
+def test普通自动中继点大角度转向保持疾跑(角度差):
+    控制器 = _普通点转弯控制器()
+    原动作 = cruise.动作指令("转向", 鼠标像素=321)
+
+    动作 = 控制器._处理普通点转弯疾跑(
+        当前索引=1,
+        动作=原动作,
+    )
+
+    assert 动作 == cruise.动作指令("疾跑前进并微调", 鼠标像素=321)
+
+
+def test转向不收敛产生的普通微调也保持疾跑():
+    控制器 = _普通点转弯控制器()
+    控制器._转向不收敛触发 = True
+    原动作 = cruise.动作指令("前进并微调", 鼠标像素=37)
+
+    动作 = 控制器._处理普通点转弯疾跑(
+        当前索引=1,
+        动作=原动作,
+    )
+
+    assert 动作 == cruise.动作指令("疾跑前进并微调", 鼠标像素=37)
+
+
+def test关闭普通点转弯疾跑时保持原地转向():
+    控制器 = _普通点转弯控制器(enabled=False)
+    原动作 = cruise.动作指令("转向", 鼠标像素=321)
+
+    assert 控制器._处理普通点转弯疾跑(当前索引=1, 动作=原动作) == 原动作
+
+
+@pytest.mark.parametrize(
+    "受保护点",
+    [
+        cruise.路径点(10, 0, 0.0, False),
+        cruise.路径点(10, 0, 0.0, True, (路线动作("comment", {"text": "关键点"}),)),
+        cruise.路径点(10, 0, 0.0, True, (), True),
+    ],
+)
+def test非自动动作精准点不转换(受保护点):
+    控制器 = _普通点转弯控制器(
+        points=[
+            cruise.路径点(0, 0, 0.0, True),
+            受保护点,
+            cruise.路径点(20, 0, 0.0, True),
+        ],
+    )
+    原动作 = cruise.动作指令("转向", 鼠标像素=321)
+
+    assert 控制器._处理普通点转弯疾跑(当前索引=1, 动作=原动作) == 原动作
+
+
+def test路线段终点不转换():
+    points = [
+        cruise.路径点(0, 0, 0.0, True),
+        cruise.路径点(10, 0, 0.0, True),
+        cruise.路径点(20, 0, 0.0, True),
+    ]
+    segments = [
+        cruise.路线段信息("one.jsonl", 0, 1),
+        cruise.路线段信息("two.jsonl", 2, 2),
+    ]
+    控制器 = _普通点转弯控制器(points=points, segments=segments)
+    原动作 = cruise.动作指令("转向", 鼠标像素=321)
+
+    assert 控制器._处理普通点转弯疾跑(当前索引=1, 动作=原动作) == 原动作
+
+
+def test疾跑转弯动作保持移动键():
+    输入 = 假输入模块()
+    执行器 = cruise.Win32执行器(
+        输入模块=输入,
+        连续控制器工厂=lambda _input, **_kwargs: 假连续控制器(),
+    )
+
+    执行器.执行(cruise.动作指令("疾跑前进并微调", 鼠标像素=321))
+
+    assert 输入.释放次数 == 0
+    assert 执行器._正在前进 is True
+    assert 执行器._本段已疾跑 is True
+    执行器.停止()
+
+
 def _越过控制器(points, *, enabled=True, segments=None):
     return cruise.巡航控制器(
         路径点列表=points,
