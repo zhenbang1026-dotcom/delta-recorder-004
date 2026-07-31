@@ -60,7 +60,11 @@ New-Item -ItemType Directory -Path $输出目录 -Force | Out-Null
 
 $参数 = @(
     "--standalone",
-    "--follow-imports",
+    "--remove-output",
+    "--deployment",
+    "--python-flag=no_docstrings",
+    "--nofollow-import-to=tests",
+    "--nofollow-import-to=pytest",
     "--enable-plugin=tk-inter",
     "--windows-console-mode=disable",
     "--output-dir=$输出目录",
@@ -109,5 +113,16 @@ if (-not (Test-Path -LiteralPath $代码块)) {
     throw "打包完成但未找到动作代码块：$代码块"
 }
 
+$源码扩展名 = @(".py", ".pyc", ".pyo", ".pyi", ".c", ".h", ".o", ".obj")
+$源码文件 = @(
+    Get-ChildItem -LiteralPath $输出目录 -Recurse -File |
+        Where-Object { $_.Extension.ToLowerInvariant() -in $源码扩展名 }
+)
+if ($源码文件.Count -gt 0) {
+    $源码列表 = ($源码文件.FullName -join [Environment]::NewLine)
+    throw "发布目录中发现源码或编译中间文件：$([Environment]::NewLine)$源码列表"
+}
+
 Write-Host "打包完成：$发布程序"
 Write-Host "动作代码块：$代码块"
+Write-Host "源码检查：通过（发布目录未发现 .py/.pyc/.pyi/C 中间文件）"
