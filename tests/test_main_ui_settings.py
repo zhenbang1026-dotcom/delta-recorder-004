@@ -84,6 +84,8 @@ def _settings_app() -> main_ui.合并主界面:
     app.speed_label_var = _Var("1.5x")
     app.arrival_var = _Var(3)
     app.precise_var = _Var(False)
+    app.turn_sprint_var = _Var(True)
+    app.skip_passed_waypoint_var = _Var(False)
     app.route_var = _Var("")
     app.route_queue = []
     return app
@@ -178,6 +180,8 @@ def test有效配置可保存并完整恢复(tmp_path: Path, monkeypatch: pytest
     app.speed_var.set(2.4)
     app.arrival_var.set(7)
     app.precise_var.set(True)
+    app.turn_sprint_var.set(False)
+    app.skip_passed_waypoint_var.set(True)
     app.route_var.set(r"D:\routes\demo.txt")
     app.route_queue = [r"D:\routes\part1.jsonl", r"D:\routes\part2.jsonl"]
     app.map_path_var.set(str(map_path))
@@ -194,6 +198,8 @@ def test有效配置可保存并完整恢复(tmp_path: Path, monkeypatch: pytest
         "视角速度倍率": 2.4,
         "到点阈值": 7,
         "精准模式": True,
+        "普通点转弯保持疾跑": False,
+        "越过普通点自动跳过": True,
         "所选大地图": str(map_path),
         "所选路线": r"D:\routes\demo.txt",
         "路线队列": [r"D:\routes\part1.jsonl", r"D:\routes\part2.jsonl"],
@@ -211,6 +217,8 @@ def test有效配置可保存并完整恢复(tmp_path: Path, monkeypatch: pytest
     assert restored.speed_label_var.get() == "2.4x"
     assert restored.arrival_var.get() == 7
     assert restored.precise_var.get() is True
+    assert restored.turn_sprint_var.get() is False
+    assert restored.skip_passed_waypoint_var.get() is True
     assert restored.map_path_var.get() == str(map_path.resolve())
     assert restored.route_var.get() == r"D:\routes\demo.txt"
     assert restored.route_queue == [
@@ -275,6 +283,8 @@ def test恢复默认范围只填写输入框等待用户应用() -> None:
                 "视角速度倍率": 3.1,
                 "到点阈值": 0,
                 "精准模式": "yes",
+                "普通点转弯保持疾跑": "yes",
+                "越过普通点自动跳过": 1,
                 "所选路线": 123,
             },
             ensure_ascii=False,
@@ -298,6 +308,8 @@ def test坏json或越界值安全回退默认值(
     assert app.speed_label_var.get() == "1.5x"
     assert app.arrival_var.get() == 3
     assert app.precise_var.get() is False
+    assert app.turn_sprint_var.get() is True
+    assert app.skip_passed_waypoint_var.get() is False
     assert app.route_var.get() == ""
 
 
@@ -403,6 +415,8 @@ def test开始回放自动停止识别并延迟透传倍率(monkeypatch: pytest.
     app.route_var.set("route.txt")
     app.route_queue = ["part1.jsonl", "part2.jsonl"]
     app.speed_var.set(2.4)
+    app.turn_sprint_var.set(False)
+    app.skip_passed_waypoint_var.set(True)
     app.巡航定位器 = object()
     app._cruise_stop = threading.Event()
     app._queue = queue.Queue()
@@ -427,6 +441,8 @@ def test开始回放自动停止识别并延迟透传倍率(monkeypatch: pytest.
     assert cruise_calls[0][0] == ("part1.jsonl", "part2.jsonl")
     assert cruise_calls[0][1]["视角速度倍率"] == 2.4
     assert cruise_calls[0][1]["中间段终点对正"] is True
+    assert cruise_calls[0][1]["普通点转弯保持疾跑"] is False
+    assert cruise_calls[0][1]["越过普通点自动跳过"] is True
     assert callable(cruise_calls[0][1]["路线段回调"])
 
 

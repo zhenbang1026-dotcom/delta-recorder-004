@@ -233,6 +233,33 @@ def test_cruise_passes_speed_multiplier_to_win32_executor(
     assert 已运行 == [True]
 
 
+def test_cruise_passes_normal_waypoint_options_to_controller(monkeypatch):
+    收到参数 = {}
+
+    class 假巡航控制器:
+        def __init__(self, **kwargs):
+            收到参数.update(kwargs)
+
+        def 运行(self):
+            pass
+
+    monkeypatch.setattr(cruise, "读取路径", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(cruise, "重置每度像素校准", lambda *_args: None)
+    monkeypatch.setattr(cruise, "寻路记录器", lambda: None)
+    monkeypatch.setattr(cruise, "Win32执行器", lambda **_kwargs: object())
+    monkeypatch.setattr(cruise, "巡航控制器", 假巡航控制器)
+
+    cruise.巡航(
+        "route.txt",
+        定位器=object(),
+        普通点转弯保持疾跑=False,
+        越过普通点自动跳过=True,
+    )
+
+    assert 收到参数["普通点转弯保持疾跑"] is False
+    assert 收到参数["越过普通点自动跳过"] is True
+
+
 def test_advanced_executor_uses_continuous_controller_without_legacy_smooth_move():
     输入 = 假输入模块()
     连续 = 假连续控制器()
@@ -289,6 +316,35 @@ def test_near_point_micro_adjustment_keeps_sprint_by_option(
     assert 原动作.类型 == "疾跑前进并微调"
     assert 近点动作.类型 == 期望动作类型
     assert 近点动作.鼠标像素 == 113
+
+
+def test_near_point_sprint_defaults_to_enabled_and_reaches_executor(monkeypatch):
+    设置模式(monkeypatch, "text")
+    输入 = 假输入模块()
+    连续 = cruise.连续视角控制器(输入, 自动启动=False, 时钟=lambda: 0.0)
+    执行器 = cruise.Win32执行器(
+        输入模块=输入,
+        连续控制器工厂=lambda _input, **_kwargs: 连续,
+    )
+    控制器 = cruise.巡航控制器(
+        路径点列表=[cruise.路径点(0, 0, 0.0, True)],
+        定位器=SimpleNamespace(),
+        执行器=执行器,
+        到点阈值=3,
+        参数=cruise.普通模式参数(),
+    )
+    原动作 = cruise.选择动作(
+        距离=8, 角度差=20.0, 到点阈值=3, 参数=控制器.参数, 自动路线=True
+    )
+    近点动作 = 控制器._处理近点位转向(距离=8, 角度差=20.0, 动作=原动作)
+
+    执行器.执行(近点动作)
+
+    assert 控制器.普通点转弯保持疾跑 is True
+    assert 近点动作.类型 == "疾跑前进并微调"
+    assert 执行器._正在前进 is True
+    assert 执行器._本段已疾跑 is True
+    assert 连续.目标角速度 > 0.0
 
 
 @pytest.mark.parametrize("普通点转弯保持疾跑", [True, False])

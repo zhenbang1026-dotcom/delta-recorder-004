@@ -320,6 +320,8 @@ class 合并主界面:
         self.route_var = tk.StringVar(value="")
         self.arrival_var = tk.IntVar(value=3)
         self.precise_var = tk.BooleanVar(value=False)
+        self.turn_sprint_var = tk.BooleanVar(value=True)
+        self.skip_passed_waypoint_var = tk.BooleanVar(value=False)
         self.speed_var = tk.DoubleVar(value=1.5)
         self.speed_label_var = tk.StringVar(value="1.5x")
         self.record_count_var = tk.StringVar(value="录制点数: 0")
@@ -614,6 +616,20 @@ class 合并主界面:
         )
         self.btn_cruise_stop.pack(side="left")
 
+        route_options = ttk.Frame(cruise)
+        route_options.pack(fill="x", pady=(6, 0))
+        ttk.Label(route_options, text="普通点策略:").pack(side="left")
+        ttk.Checkbutton(
+            route_options,
+            text="转弯保持疾跑",
+            variable=self.turn_sprint_var,
+        ).pack(side="left", padx=(6, 14))
+        ttk.Checkbutton(
+            route_options,
+            text="越过普通点自动跳过",
+            variable=self.skip_passed_waypoint_var,
+        ).pack(side="left")
+
         # 独立低头 / 抬头测试
         look_test = ttk.LabelFrame(self.root, text="低头 / 抬头独立测试", padding=8)
         look_test.pack(fill="x", padx=12, pady=4)
@@ -707,6 +723,14 @@ class 合并主界面:
         if isinstance(precise, bool):
             self.precise_var.set(precise)
 
+        turn_sprint = data.get("普通点转弯保持疾跑")
+        if isinstance(turn_sprint, bool):
+            self.turn_sprint_var.set(turn_sprint)
+
+        skip_passed = data.get("越过普通点自动跳过")
+        if isinstance(skip_passed, bool):
+            self.skip_passed_waypoint_var.set(skip_passed)
+
         try:
             saved_small_map = data.get("小地图范围")
             if isinstance(saved_small_map, (list, tuple)):
@@ -761,6 +785,8 @@ class 合并主界面:
             "视角速度倍率": round(speed, 1),
             "到点阈值": arrival,
             "精准模式": bool(self.precise_var.get()),
+            "普通点转弯保持疾跑": bool(self.turn_sprint_var.get()),
+            "越过普通点自动跳过": bool(self.skip_passed_waypoint_var.get()),
             "所选大地图": str(self.map_path_var.get()),
             "所选路线": str(self.route_var.get()),
             "路线队列": list(self.route_queue),
@@ -1082,6 +1108,8 @@ class 合并主界面:
         )
         定位器 = self.巡航定位器
         精准 = bool(self.precise_var.get())
+        普通点转弯保持疾跑 = bool(self.turn_sprint_var.get())
+        越过普通点自动跳过 = bool(self.skip_passed_waypoint_var.get())
         视角速度倍率 = float(self.speed_var.get())
 
         def route_progress(index: int, total: int, path: str) -> None:
@@ -1108,6 +1136,8 @@ class 合并主界面:
                     游戏窗口句柄=self._cruise_game_hwnd,
                     路线段回调=route_progress,
                     中间段终点对正=len(routes) > 1,
+                    普通点转弯保持疾跑=普通点转弯保持疾跑,
+                    越过普通点自动跳过=越过普通点自动跳过,
                 )
                 self._queue.put(("cruise_done", f"{len(routes)} 段路线已全部回放完成"))
             except 巡航模块.紧急停止异常:
