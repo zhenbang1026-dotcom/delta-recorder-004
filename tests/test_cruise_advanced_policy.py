@@ -318,6 +318,125 @@ def test_text_near_point_large_angle_keeps_turning_in_place_by_option(
     assert 动作 == 原动作
 
 
+def _越过控制器(points, *, enabled=True, segments=None):
+    return cruise.巡航控制器(
+        路径点列表=points,
+        定位器=SimpleNamespace(),
+        执行器=SimpleNamespace(),
+        到点阈值=3,
+        参数=cruise.普通模式参数(),
+        越过普通点自动跳过=enabled,
+        路线段列表=segments,
+    )
+
+
+def test_passed_plain_waypoint_is_skipped_only_when_next_is_closer():
+    points = [
+        cruise.路径点(0, 0, 0.0, True),
+        cruise.路径点(10, 0, 0.0, True),
+        cruise.路径点(20, 0, 0.0, True),
+    ]
+    控制器 = _越过控制器(points)
+
+    assert 控制器._应跳过已越过普通点(当前索引=1, x=16, y=0, 距离=6)
+    assert not 控制器._应跳过已越过普通点(当前索引=1, x=14, y=0, 距离=4)
+
+
+def test_passed_waypoint_option_defaults_to_disabled():
+    points = [
+        cruise.路径点(0, 0, 0.0, True),
+        cruise.路径点(10, 0, 0.0, True),
+        cruise.路径点(20, 0, 0.0, True),
+    ]
+    控制器 = _越过控制器(points, enabled=False)
+
+    assert not 控制器._应跳过已越过普通点(当前索引=1, x=16, y=0, 距离=6)
+
+
+@pytest.mark.parametrize(
+    "受保护点",
+    [
+        cruise.路径点(10, 0, 0.0, False),
+        cruise.路径点(10, 0, 0.0, True, (路线动作("comment", {"text": "关键点"}),)),
+        cruise.路径点(10, 0, 0.0, True, (), True),
+    ],
+)
+def test_manual_action_and_precise_waypoints_are_never_skipped(受保护点):
+    控制器 = _越过控制器(
+        [cruise.路径点(0, 0, 0.0, True), 受保护点, cruise.路径点(20, 0, 0.0, True)]
+    )
+
+    assert not 控制器._应跳过已越过普通点(当前索引=1, x=16, y=0, 距离=6)
+
+
+def test_first_final_and_intermediate_segment_endpoints_are_never_skipped():
+    points = [
+        cruise.路径点(0, 0, 0.0, True),
+        cruise.路径点(10, 0, 0.0, True),
+        cruise.路径点(20, 0, 0.0, True),
+    ]
+    segments = [
+        cruise.路线段信息("part1.jsonl", 0, 1),
+        cruise.路线段信息("part2.jsonl", 2, 2),
+    ]
+    控制器 = _越过控制器(points, segments=segments)
+
+    assert not 控制器._应跳过已越过普通点(当前索引=0, x=6, y=0, 距离=6)
+    assert not 控制器._应跳过已越过普通点(当前索引=1, x=16, y=0, 距离=6)
+    assert not 控制器._应跳过已越过普通点(当前索引=2, x=26, y=0, 距离=6)
+
+
+def test_corner_overshoot_is_not_skipped_when_current_point_is_closer():
+    points = [
+        cruise.路径点(0, 0, 0.0, True),
+        cruise.路径点(10, 0, 0.0, True),
+        cruise.路径点(10, 10, 0.0, True),
+    ]
+    控制器 = _越过控制器(points)
+
+    assert not 控制器._应跳过已越过普通点(当前索引=1, x=16, y=0, 距离=6)
+
+
+def test_run_skips_passed_plain_waypoint_without_stopping(monkeypatch):
+    monkeypatch.setattr(cruise, "处理esc紧急停止", lambda _event=None: False)
+    states = iter([(0, 0, 0.0), (16, 0, 0.0), (20, 0, 0.0)])
+    events = []
+    logs = []
+
+    class 定位器:
+        def 读取状态(self):
+            return next(states)
+
+    class 执行器:
+        def 执行(self, 动作):
+            events.append(动作.类型)
+
+        def 停止(self):
+            events.append("停止")
+
+    控制器 = cruise.巡航控制器(
+        路径点列表=[
+            cruise.路径点(0, 0, 0.0, True),
+            cruise.路径点(10, 0, 0.0, True),
+            cruise.路径点(20, 0, 0.0, True),
+        ],
+        定位器=定位器(),
+        执行器=执行器(),
+        到点阈值=3,
+        参数=cruise.普通模式参数(),
+        越过普通点自动跳过=True,
+        循环间隔=0.0,
+        日志函数=lambda event, **fields: logs.append((event, fields)),
+    )
+
+    控制器.运行()
+
+    assert events == ["自动路线切换下一个点", "自动路线切换下一个点", "停止"]
+    skipped = next(fields for event, fields in logs if event == "event=waypoint_skipped")
+    assert skipped["目标"] == "10,0"
+    assert skipped["下一目标"] == "20,0"
+
+
 def test_route_spacing_is_six_only_when_explicitly_selected(tmp_path):
     路径 = tmp_path / "route.txt"
     路径.write_text("\n".join(f"{x},0" for x in range(0, 31, 3)), encoding="utf-8")

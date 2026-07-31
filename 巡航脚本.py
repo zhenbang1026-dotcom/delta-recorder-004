@@ -1227,6 +1227,7 @@ class 巡航控制器:
         路线段回调=None,
         中间段终点对正: bool = False,
         普通点转弯保持疾跑: bool = True,
+        越过普通点自动跳过: bool = False,
     ):
         if not 路径点列表:
             raise ValueError("路径点列表不能为空")
@@ -1245,6 +1246,7 @@ class 巡航控制器:
         self.路线段回调 = 路线段回调
         self.中间段终点对正 = bool(中间段终点对正)
         self.普通点转弯保持疾跑 = bool(普通点转弯保持疾跑)
+        self.越过普通点自动跳过 = bool(越过普通点自动跳过)
         self._路线段起点 = {
             segment.起点索引: (index, len(self.路线段列表), segment)
             for index, segment in enumerate(self.路线段列表, start=1)
@@ -1292,6 +1294,35 @@ class 巡航控制器:
                 self.路线段回调(序号, 总数, segment.路径)
             except Exception:
                 pass
+
+    def _应跳过已越过普通点(
+        self,
+        *,
+        当前索引: int,
+        x: int,
+        y: int,
+        距离: int,
+    ) -> bool:
+        if (
+            not self.越过普通点自动跳过
+            or 当前索引 <= 0
+            or 当前索引 >= len(self.路径点列表) - 1
+            or 当前索引 in self._中间段终点
+            or 距离 <= self.到点阈值
+        ):
+            return False
+        上一点 = self.路径点列表[当前索引 - 1]
+        当前点 = self.路径点列表[当前索引]
+        下一点 = self.路径点列表[当前索引 + 1]
+        if not 当前点.自动路线 or 当前点.精准点 or 当前点.actions:
+            return False
+        入向量_x = 当前点.x - 上一点.x
+        入向量_y = 当前点.y - 上一点.y
+        if 入向量_x == 0 and 入向量_y == 0:
+            return False
+        已越过 = (x - 当前点.x) * 入向量_x + (y - 当前点.y) * 入向量_y > 0
+        下一点距离 = 计算距离(x, y, 下一点.x, 下一点.y)
+        return 已越过 and 下一点距离 < 距离
 
     def _检查紧急停止(self) -> None:
         if 处理esc紧急停止(getattr(self, "停止事件", None)):
@@ -1746,6 +1777,38 @@ class 巡航控制器:
                     if 实际像素 is not None:
                         setattr(self.定位器, "连续控制实际像素", int(实际像素))
                 距离 = 计算距离(x, y, 当前点.x, 当前点.y)
+                if self._应跳过已越过普通点(
+                    当前索引=当前索引,
+                    x=x,
+                    y=y,
+                    距离=距离,
+                ):
+                    下一点 = self.路径点列表[当前索引 + 1]
+                    下一点距离 = 计算距离(x, y, 下一点.x, 下一点.y)
+                    设置控制诊断状态(self.定位器, "已越过普通点，切换下一点")
+                    写日志(
+                        self.日志函数,
+                        "event=waypoint_skipped",
+                        索引=当前索引,
+                        坐标=f"{x},{y}",
+                        目标=f"{当前点.x},{当前点.y}",
+                        下一目标=f"{下一点.x},{下一点.y}",
+                        当前点距离=距离,
+                        下一点距离=下一点距离,
+                    )
+                    if self.记录器 is not None:
+                        self.记录器.记录(
+                            事件="waypoint_skipped",
+                            索引=当前索引,
+                            坐标=f"{x},{y}",
+                            目标=f"{当前点.x},{当前点.y}",
+                            下一目标=f"{下一点.x},{下一点.y}",
+                            当前点距离=距离,
+                            下一点距离=下一点距离,
+                        )
+                    self.执行器.执行(动作指令("自动路线切换下一个点"))
+                    当前索引 += 1
+                    continue
                 是否卡住, 当前时间 = self._检测卡住(x, y, 距离, 当前索引)
                 setattr(self.定位器, "当前目标点详情", f"{当前索引 + 1}/{len(self.路径点列表)} -> ({当前点.x}, {当前点.y})")
                 if 距离 <= self.到点阈值:
