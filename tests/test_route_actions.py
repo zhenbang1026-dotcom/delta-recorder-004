@@ -47,6 +47,7 @@ def test_old_txt_route_remains_readable(tmp_path: Path) -> None:
         (1, 2, 0.0, True),
         (3, 4, 0.0, True),
     ]
+    assert all(p.精准点 is False for p in points)
 
 
 def test_key_action_rejects_jitter_that_can_make_duration_non_positive() -> None:

@@ -195,11 +195,14 @@ class 路线点:
     angle: float = 0.0
     自动路线: bool = False
     actions: tuple[路线动作, ...] = ()
+    精准点: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "x", int(self.x))
         object.__setattr__(self, "y", int(self.y))
         object.__setattr__(self, "angle", float(self.angle))
+        if not isinstance(self.精准点, bool):
+            raise ValueError("路线点精准标记必须为布尔值")
         actions = tuple(self.actions)
         for action in actions:
             if not isinstance(action, 路线动作):
@@ -208,7 +211,10 @@ class 路线点:
         object.__setattr__(self, "actions", actions)
 
     def 替换动作(self, actions: Iterable[路线动作]) -> "路线点":
-        return 路线点(self.x, self.y, self.angle, self.自动路线, tuple(actions))
+        return 路线点(self.x, self.y, self.angle, self.自动路线, tuple(actions), self.精准点)
+
+    def 替换精准点(self, 精准点: bool) -> "路线点":
+        return 路线点(self.x, self.y, self.angle, self.自动路线, self.actions, 精准点)
 
 
 def 写入路线文件(路径: str | Path, 路线点列表: Iterable[路线点]) -> Path:
@@ -222,16 +228,19 @@ def 写入路线文件(路径: str | Path, 路线点列表: Iterable[路线点])
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [json.dumps({"version": 2, "type": "route"}, ensure_ascii=False, separators=(",", ":"))]
     for point in points:
+        record = {
+            "type": "point",
+            "x": point.x,
+            "y": point.y,
+            "angle": point.angle,
+            "auto": point.自动路线,
+            "actions": [action.to_dict() for action in point.actions],
+        }
+        if point.精准点:
+            record["precise"] = True
         lines.append(
             json.dumps(
-                {
-                    "type": "point",
-                    "x": point.x,
-                    "y": point.y,
-                    "angle": point.angle,
-                    "auto": point.自动路线,
-                    "actions": [action.to_dict() for action in point.actions],
-                },
+                record,
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
@@ -284,6 +293,9 @@ def 读取路线文件(路径: str | Path) -> list[路线点]:
             raise ValueError(f"第{line_no}行不是 point")
         try:
             actions = tuple(路线动作.from_dict(item) for item in data.get("actions", []))
+            precise = data.get("precise", False)
+            if not isinstance(precise, bool):
+                raise ValueError("路线点精准标记必须为布尔值")
             result.append(
                 路线点(
                     int(data["x"]),
@@ -291,6 +303,7 @@ def 读取路线文件(路径: str | Path) -> list[路线点]:
                     float(data.get("angle", 0.0)),
                     bool(data.get("auto", False)),
                     actions,
+                    precise,
                 )
             )
         except (KeyError, TypeError, ValueError) as exc:

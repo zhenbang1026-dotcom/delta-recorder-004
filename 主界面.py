@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import winsound
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import List, Optional, Tuple
@@ -167,6 +168,57 @@ def 构建动作锚点(state, actions) -> 路线点:
     return 路线点(state.x, state.y, state.angle, True, tuple(actions))
 
 
+class 录制双击检测器:
+    def __init__(self, 最大间隔秒数: float = 0.5) -> None:
+        self.最大间隔秒数 = float(最大间隔秒数)
+        self._当前按下 = False
+        self._上次按下时间: float | None = None
+
+    def 重置(self) -> None:
+        self._当前按下 = False
+        self._上次按下时间 = None
+
+    def 更新(self, 按下: bool, 当前时间: float) -> bool:
+        按下 = bool(按下)
+        当前时间 = float(当前时间)
+        if not 按下:
+            self._当前按下 = False
+            if (
+                self._上次按下时间 is not None
+                and 当前时间 - self._上次按下时间 > self.最大间隔秒数
+            ):
+                self._上次按下时间 = None
+            return False
+        if self._当前按下:
+            return False
+        self._当前按下 = True
+        if (
+            self._上次按下时间 is not None
+            and 当前时间 - self._上次按下时间 <= self.最大间隔秒数
+        ):
+            self._上次按下时间 = None
+            return True
+        self._上次按下时间 = 当前时间
+        return False
+
+
+def 记录或更新精准点(路线点列表, 录制器, state) -> str:
+    新点 = 路线点(state.x, state.y, state.angle, True, (), True)
+    替换最后 = bool(
+        路线点列表
+        and not 路线点列表[-1].actions
+        and math.hypot(路线点列表[-1].x - 新点.x, 路线点列表[-1].y - 新点.y)
+        < 录制器.最小记录距离
+    )
+    if 替换最后:
+        路线点列表[-1] = 新点
+        录制器.强制记录(新点.x, 新点.y, 替换最后=True)
+        return "更新"
+    路线点列表.append(新点)
+    录制器.强制记录(新点.x, 新点.y)
+    return "新增"
+
+
 def 构建低头抬头测试动作(
     direction: str,
     抬头Y,
@@ -219,6 +271,7 @@ class 合并主界面:
         self.route_queue: list[str] = []
         self._recorded_route_points: list[路线点] = []
         self._q_down = False
+        self._e_detector = 录制双击检测器(0.5)
         self._action_window = None
         self._previous_foreground_hwnd = 0
         self._yolo_window = None
@@ -283,6 +336,7 @@ class 合并主界面:
         self.root.after(80, self._drain_queue)
         self.root.after(100, self._esc_poll)
         self.root.after(50, self._q_poll)
+        self.root.after(50, self._e_poll)
         定位窗口到右下角(self.root, 1100, 820)
 
     # ------------------------------------------------------------------ init
@@ -434,7 +488,11 @@ class 合并主界面:
         ).pack(side="left")
 
         # 识别 / 录制
-        rec = ttk.LabelFrame(self.root, text="识别与录制（录制中按 Q 暂停并添加动作）", padding=8)
+        rec = ttk.LabelFrame(
+            self.root,
+            text="识别与录制（录制中按 Q 添加动作，双击 E 添加精准点）",
+            padding=8,
+        )
         rec.pack(fill="x", padx=12, pady=4)
         btns = ttk.Frame(rec)
         btns.pack(fill="x")
@@ -885,6 +943,7 @@ class 合并主界面:
             return
         self.recording = True
         self.recording_paused = False
+        self._e_detector.重置()
         self._last_saved = None
         self.录制器.清空()
         self._recorded_route_points.clear()
@@ -903,6 +962,7 @@ class 合并主界面:
             return
         self.recording = False
         self.recording_paused = False
+        self._e_detector.重置()
         self.btn_rec_start.config(state="normal" if self.detecting else "disabled")
         self.btn_rec_stop.config(state="disabled")
         if not self._recorded_route_points:
@@ -939,6 +999,7 @@ class 合并主界面:
         self.录制器.清空()
         self._recorded_route_points.clear()
         self.recording_paused = False
+        self._e_detector.重置()
         self._last_saved = None
         self._refresh_points_text()
         self.record_count_var.set("录制点数: 0")
@@ -1890,6 +1951,9 @@ class 合并主界面:
                 self.录制器.记录列表,
                 self.录制器.异常线列表,
             )
+            for 点 in self._recorded_route_points:
+                if 点.精准点:
+                    cv2.circle(img, (点.x, 点.y), 6, (0, 0, 255), -1)
             self._set_preview(img)
         except Exception:
             pass
@@ -1904,7 +1968,9 @@ class 合并主界面:
             self.points_text.insert(
                 "1.0",
                 "\n".join(
-                    f"{点.x},{点.y}" + (f"  [动作 {len(点.actions)} 个]" if 点.actions else "")
+                    f"{点.x},{点.y}"
+                    + ("  [精准]" if 点.精准点 else "")
+                    + (f"  [动作 {len(点.actions)} 个]" if 点.actions else "")
                     for 点 in self._recorded_route_points
                 )
                 + "\n",
@@ -1941,6 +2007,39 @@ class 合并主界面:
             self._open_q_action_menu()
         self._q_down = down
         self.root.after(50, self._q_poll)
+
+    def _e_poll(self) -> None:
+        try:
+            down = bool(win32api.GetAsyncKeyState(ord("E")) & 0x8000)
+        except Exception:
+            down = False
+        if self._e_detector.更新(down, time.monotonic()):
+            self._记录精准点()
+        self.root.after(50, self._e_poll)
+
+    def _记录精准点(self) -> bool:
+        if not self.recording or self.recording_paused or self.current_state is None:
+            return False
+        state = self.current_state
+        结果 = 记录或更新精准点(self._recorded_route_points, self.录制器, state)
+        self._refresh_points_text()
+        self._draw_preview(state)
+        self.record_count_var.set(f"录制点数: {len(self._recorded_route_points)}")
+        self.status_var.set(
+            f"已记录精准点（{结果}）: {state.x},{state.y} | 角度 {state.angle:.2f}"
+        )
+        录制模块.写日志(
+            self._log_fn,
+            "event=record_precise",
+            结果=结果,
+            坐标=f"{state.x},{state.y}",
+            角度=f"{state.angle:.2f}",
+        )
+        try:
+            winsound.MessageBeep(winsound.MB_OK)
+        except (OSError, RuntimeError):
+            pass
+        return True
 
     def _open_q_action_menu(self) -> None:
         snapshot = self.current_state

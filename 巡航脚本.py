@@ -172,6 +172,7 @@ class 路径点:
     angle: float
     自动路线: bool = False
     actions: tuple[路线动作, ...] = ()
+    精准点: bool = False
 
 
 @dataclass(frozen=True)
@@ -197,6 +198,10 @@ class 动作指令:
 
 
 class 紧急停止异常(RuntimeError):
+    pass
+
+
+class 精准点到达失败(RuntimeError):
     pass
 
 
@@ -529,7 +534,7 @@ def 读取路径(路径文件: str, 自动路线点距: int | None = None) -> li
     if Path(路径文件).suffix.lower() in {".jsonl", ".json"}:
         动作路线点 = 读取动作路线文件(路径文件)
         结果 = [
-            路径点(点.x, 点.y, 点.angle, 点.自动路线, 点.actions)
+            路径点(点.x, 点.y, 点.angle, 点.自动路线, 点.actions, 点.精准点)
             for 点 in 动作路线点
         ]
         if 结果 and all(点.自动路线 for 点 in 结果):
@@ -614,7 +619,7 @@ def 抽稀自动路线(路径点列表: list[路径点], 最小点距: int = 自
     结果 = [路径点列表[0]]
     上次保留 = 路径点列表[0]
     for 点 in 路径点列表[1:-1]:
-        if 点.actions or 计算距离(上次保留.x, 上次保留.y, 点.x, 点.y) >= 最小点距:
+        if 点.actions or 点.精准点 or 计算距离(上次保留.x, 上次保留.y, 点.x, 点.y) >= 最小点距:
             结果.append(点)
             上次保留 = 点
     if 结果[-1] != 路径点列表[-1]:
@@ -1685,6 +1690,37 @@ class 巡航控制器:
         )
         return 最终状态
 
+    def _执行精准点对准(self, 精准点: 路径点, 当前索引: int) -> tuple[int, int, float]:
+        设置控制诊断状态(self.定位器, "精准点对准中")
+        最终状态 = self._执行动作终点对准(精准点)
+        x, y, 当前角度 = 最终状态
+        距离 = 计算距离(x, y, 精准点.x, 精准点.y)
+        点位序号 = f"{当前索引 + 1}/{len(self.路径点列表)}"
+        if 距离 > 动作终点坐标容差:
+            错误 = (
+                f"精准点到达失败：第 {点位序号} 点，"
+                f"目标={精准点.x},{精准点.y}，最终={x},{y}，误差={距离}像素"
+            )
+            写日志(
+                self.日志函数,
+                "event=precise_waypoint_failed",
+                点位=点位序号,
+                目标=f"{精准点.x},{精准点.y}",
+                最终坐标=f"{x},{y}",
+                误差=距离,
+            )
+            raise 精准点到达失败(错误)
+        写日志(
+            self.日志函数,
+            "event=precise_waypoint_aligned",
+            点位=点位序号,
+            目标=f"{精准点.x},{精准点.y}",
+            最终坐标=f"{x},{y}",
+            误差=距离,
+            最终角度=f"{当前角度:.2f}",
+        )
+        return 最终状态
+
     def 运行(self, 最大步数: int | None = None) -> None:
         当前索引 = 0
         步数 = 0
@@ -1707,7 +1743,10 @@ class 巡航控制器:
                 setattr(self.定位器, "当前目标点详情", f"{当前索引 + 1}/{len(self.路径点列表)} -> ({当前点.x}, {当前点.y})")
                 if 距离 <= self.到点阈值:
                     路线动作列表 = getattr(当前点, "actions", ())
-                    if 路线动作列表:
+                    if getattr(当前点, "精准点", False):
+                        x, y, 当前角度 = self._执行精准点对准(当前点, 当前索引)
+                        距离 = 计算距离(x, y, 当前点.x, 当前点.y)
+                    elif 路线动作列表:
                         try:
                             x, y, 当前角度 = self._执行动作终点对准(当前点)
                             距离 = 计算距离(x, y, 当前点.x, 当前点.y)
@@ -1720,6 +1759,7 @@ class 巡航控制器:
                                 目标=f"({当前点.x}, {当前点.y})",
                                 错误=str(exc),
                             )
+                    if 路线动作列表:
                         写日志(
                             self.日志函数,
                             "event=route_actions",

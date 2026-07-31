@@ -975,6 +975,9 @@ class 路线编辑窗口:
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x")
         ttk.Button(buttons, text="编辑选中点动作", command=self._编辑动作, width=18).pack(side="left")
+        ttk.Button(buttons, text="切换精准/普通", command=self._切换精准状态, width=16).pack(
+            side="left", padx=(6, 0)
+        )
         ttk.Button(buttons, text="保存路线", command=self._保存, width=12).pack(side="right")
         ttk.Button(buttons, text="取消", command=self._关闭, width=10).pack(side="right", padx=6)
         self._刷新(0)
@@ -983,9 +986,11 @@ class 路线编辑窗口:
     def _刷新(self, select: int | None = None) -> None:
         self.listbox.delete(0, "end")
         for index, point in enumerate(self.points, start=1):
+            精准标签 = "[精准]" if point.精准点 else "[普通]"
             self.listbox.insert(
                 "end",
-                f"{index:04d}  x={point.x}, y={point.y}, angle={point.angle:.2f}°  |  动作 {len(point.actions)} 个",
+                f"{index:04d}  {精准标签}  x={point.x}, y={point.y}, "
+                f"angle={point.angle:.2f}°  |  动作 {len(point.actions)} 个",
             )
         if select is not None and self.points:
             self.listbox.selection_set(select)
@@ -1009,6 +1014,16 @@ class 路线编辑窗口:
 
     def _替换动作(self, index: int, actions: tuple[路线动作, ...]) -> None:
         self.points[index] = self.points[index].替换动作(actions)
+        self._刷新(index)
+
+    def _切换精准状态(self) -> None:
+        selected = self.listbox.curselection()
+        if not selected:
+            messagebox.showinfo("提示", "请先选择一个路线点", parent=self.window)
+            return
+        index = int(selected[0])
+        point = self.points[index]
+        self.points[index] = point.替换精准点(not point.精准点)
         self._刷新(index)
 
     def _保存(self, *, 确认覆盖: bool = True) -> None:

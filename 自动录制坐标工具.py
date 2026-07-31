@@ -170,6 +170,16 @@ class 自动坐标录制器:
         self.上一记录点 = 点
         return True
 
+    def 强制记录(self, x: int, y: int, *, 替换最后: bool = False) -> None:
+        点 = (int(x), int(y))
+        if 替换最后 and self.记录列表:
+            self.记录列表[-1] = 点
+        else:
+            self.记录列表.append(点)
+        self.上一记录点 = 点
+        self._候选异常点 = None
+        self._候选异常次数 = 0
+
     def _清理已转正异常线(self, 点: Tuple[int, int]) -> None:
         self.异常线列表 = [
             异常线 for 异常线 in self.异常线列表

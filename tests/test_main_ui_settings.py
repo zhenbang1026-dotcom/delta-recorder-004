@@ -92,6 +92,7 @@ def _settings_app() -> main_ui.合并主界面:
 def _button_app() -> main_ui.合并主界面:
     app = _settings_app()
     app.root = _Root()
+    app._e_detector = main_ui.录制双击检测器(0.5)
     app.detecting = False
     app.recording = False
     app.cruising = False
