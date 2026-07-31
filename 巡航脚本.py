@@ -1226,6 +1226,7 @@ class 巡航控制器:
         路线段列表: list[路线段信息] | None = None,
         路线段回调=None,
         中间段终点对正: bool = False,
+        普通点转弯保持疾跑: bool = True,
     ):
         if not 路径点列表:
             raise ValueError("路径点列表不能为空")
@@ -1243,6 +1244,7 @@ class 巡航控制器:
         self.路线段列表 = list(路线段列表 or [])
         self.路线段回调 = 路线段回调
         self.中间段终点对正 = bool(中间段终点对正)
+        self.普通点转弯保持疾跑 = bool(普通点转弯保持疾跑)
         self._路线段起点 = {
             segment.起点索引: (index, len(self.路线段列表), segment)
             for index, segment in enumerate(self.路线段列表, start=1)
@@ -1538,7 +1540,12 @@ class 巡航控制器:
                 return 动作
             self._近点位保护触发 = True
             微调角度 = max(-增强近点位最大微调角度, min(增强近点位最大微调角度, 角度差))
-            return 动作指令("前进并微调", 鼠标像素=text微调鼠标像素(微调角度, self.参数.精准缩放))
+            动作类型 = (
+                "疾跑前进并微调"
+                if self.普通点转弯保持疾跑 and 动作.类型 in {"疾跑前进", "疾跑前进并微调"}
+                else "前进并微调"
+            )
+            return 动作指令(动作类型, 鼠标像素=text微调鼠标像素(微调角度, self.参数.精准缩放))
         return 动作
 
     def _处理转向不收敛(

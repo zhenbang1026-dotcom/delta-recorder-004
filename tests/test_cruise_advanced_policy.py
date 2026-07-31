@@ -265,30 +265,57 @@ def test_advanced_waypoint_switch_clears_previous_turn_target():
     assert 连续.角度差记录 == [12.0, 0.0, -12.0, 0.0]
 
 
-def test_near_point_micro_adjustment_reaches_continuous_controller(monkeypatch):
+@pytest.mark.parametrize(
+    ("普通点转弯保持疾跑", "期望动作类型"),
+    [(True, "疾跑前进并微调"), (False, "前进并微调")],
+)
+def test_near_point_micro_adjustment_keeps_sprint_by_option(
+    monkeypatch, 普通点转弯保持疾跑, 期望动作类型
+):
     设置模式(monkeypatch, "text")
-    输入 = 假输入模块()
-    连续 = cruise.连续视角控制器(输入, 自动启动=False, 时钟=lambda: 0.0)
-    执行器 = cruise.Win32执行器(
-        输入模块=输入,
-        连续控制器工厂=lambda _input, **_kwargs: 连续,
-    )
     控制器 = cruise.巡航控制器(
         路径点列表=[cruise.路径点(0, 0, 0.0, True)],
         定位器=SimpleNamespace(),
-        执行器=执行器,
+        执行器=SimpleNamespace(),
         到点阈值=3,
         参数=cruise.普通模式参数(),
+        普通点转弯保持疾跑=普通点转弯保持疾跑,
     )
     原动作 = cruise.选择动作(
         距离=8, 角度差=20.0, 到点阈值=3, 参数=控制器.参数, 自动路线=True
     )
     近点动作 = 控制器._处理近点位转向(距离=8, 角度差=20.0, 动作=原动作)
 
-    执行器.执行(近点动作)
-
+    assert 原动作.类型 == "疾跑前进并微调"
+    assert 近点动作.类型 == 期望动作类型
     assert 近点动作.鼠标像素 == 113
-    assert 连续.目标角速度 > 0.0
+
+
+@pytest.mark.parametrize("普通点转弯保持疾跑", [True, False])
+def test_text_near_point_large_angle_keeps_turning_in_place_by_option(
+    monkeypatch, 普通点转弯保持疾跑
+):
+    设置模式(monkeypatch, "text")
+    控制器 = cruise.巡航控制器(
+        路径点列表=[cruise.路径点(0, 0, 0.0, True)],
+        定位器=SimpleNamespace(),
+        执行器=SimpleNamespace(),
+        到点阈值=3,
+        参数=cruise.普通模式参数(),
+        普通点转弯保持疾跑=普通点转弯保持疾跑,
+    )
+    原动作 = cruise.选择动作(
+        距离=8,
+        角度差=45.0,
+        到点阈值=3,
+        参数=控制器.参数,
+        自动路线=True,
+    )
+
+    动作 = 控制器._处理近点位转向(距离=8, 角度差=45.0, 动作=原动作)
+
+    assert 原动作.类型 == "转向"
+    assert 动作 == 原动作
 
 
 def test_route_spacing_is_six_only_when_explicitly_selected(tmp_path):
