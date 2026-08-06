@@ -14,3 +14,4 @@ location.txt
 nuitka-crash-report.xml
 发布/
 .DS_Store
+识别结果/
